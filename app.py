@@ -386,6 +386,47 @@ def curriculum_catalog():
     return {f"C{i:03d}": text for i, text in enumerate(reference["entries"], 1)}
 
 
+def planned_teacher_dialogue(step):
+    """작성된 놀이 단계에 맞는 제안 발화이며 실제 관찰 기록이 아닙니다."""
+    for keywords, speech in (
+        (("인사", "친구", "손뼉"), "친구에게 어떻게 인사해 볼까?\nT: 선생님과 함께 해 볼까?"),
+        (("노래", "음악", "소리", "듣"), "어떤 소리가 들리니?\nT: 함께 들어 볼까?"),
+        (("그리", "꾸미", "끼적", "색", "붙"), "어떤 색으로 해 보고 싶니?\nT: 어디에 해 볼까?"),
+        (("굴", "던", "공", "움직", "건너"), "어느 쪽으로 움직여 볼까?\nT: 선생님과 천천히 해 볼까?"),
+        (("만져", "만지", "촉감"), "만져 보니 어떤 느낌이 드니?\nT: 한 번 더 만져 볼까?"),
+        (("그림", "책", "살펴", "탐색", "관찰"), "무엇이 보이니?\nT: 함께 살펴볼까?"),
+    ):
+        if any(word in step for word in keywords):
+            return "T: " + speech
+    return "T: 어떻게 해 볼까?\nT: 선생님과 함께 해 볼까?"
+
+
+def complete_teacher_dialogue(value):
+    """기존 발화는 보존하고, 상세 계획에서 누락된 발화만 자동 보완합니다."""
+    blocks = re.split(r"(?=◈\s*활동명|◆\s*활동명|\[미세먼지)", value)
+    completed = []
+    for block in blocks:
+        if not re.search(r"활동\s*방법", block):
+            if re.search(r"활동\s*목표", block):
+                block = block.rstrip() + "\n- 활동방법\n1. 교사와 함께 놀이를 시도한다.\n"
+            else:
+                completed.append(block)
+                continue
+        head, method = re.split(r"활동\s*방법\s*[:：]?", block, maxsplit=1)
+        method = re.sub(r"(?m)^[ \t]*(?:[-*][ \t]*)?(?:T|Ｔ|교사)[ \t]*[:：][ \t]*([^\n]*)$",
+                        lambda m: "T: " + m[1].strip(), method)
+        method = re.sub(r"(?m)^T:[ \t]*$", "", method)
+        method = re.sub(r"(?m)^\s*[-*]?\s*(\d+)[.)]\s*", r"\1. ", method)
+        if not re.search(r"(?m)^\d+\. ", method):
+            method = "1. " + (method.strip() or "교사와 함께 놀이를 시도한다.")
+        chunks = re.split(r"(?m)(?=^\d+\. )", method)
+        for i, chunk in enumerate(chunks):
+            if re.match(r"\d+\. ", chunk) and not re.search(r"(?m)^T: *\S", chunk):
+                chunks[i] = chunk.rstrip() + "\n" + planned_teacher_dialogue(chunk.splitlines()[0]) + "\n"
+        completed.append(head + "활동방법\n" + "".join(chunks).lstrip("\n"))
+    return "".join(completed)
+
+
 def finalize_activity_plans(day):
     """세부내용은 등록 문구로 치환하고 상세 계획의 교사 발화를 검사합니다."""
     catalog = curriculum_catalog()
@@ -396,6 +437,7 @@ def finalize_activity_plans(day):
         value = result.get(field, "")
         if not value.strip():
             continue
+        value = complete_teacher_dialogue(value)
         lines = value.splitlines()
         in_details = False
         for i, line in enumerate(lines):
@@ -617,7 +659,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r8")
+st.caption("앱 버전: 2026-09-26-r9")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -659,7 +701,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"planning-r8", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r9", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()

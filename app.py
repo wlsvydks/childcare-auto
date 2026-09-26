@@ -168,8 +168,8 @@ def build_hwp_from_template(template_hml_text, day_data):
     return result
 
 # ---------------- 3. AI 분석 및 생성 함수 ----------------
-def get_available_models(client):
-    configured = setting("GEMINI_MODEL").strip()
+def get_available_models(client, model_setting="GEMINI_MODEL"):
+    configured = setting(model_setting).strip()
     if configured:
         return [configured]
     names = []
@@ -181,8 +181,8 @@ def get_available_models(client):
                 and not any(x in name for x in ("image", "tts", "live", "audio", "preview", "exp"))):
             names.append(name)
     if not names:
-        raise ValueError("사용 가능한 모델이 없습니다. 관리자에게 GEMINI_MODEL 설정을 요청해 주세요.")
-    return sorted(names, reverse=True)[:2]
+        raise ValueError(f"사용 가능한 모델이 없습니다. 관리자에게 {model_setting} 설정을 요청해 주세요.")
+    return sorted(set(names), reverse=True)
 
 
 def validate_days(data):
@@ -199,8 +199,94 @@ def validate_days(data):
     return data
 
 
-def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box):
+def api_error_code(exc):
+    try:
+        return int(getattr(exc, "code", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def error_diagnostic(exc, model_name):
+    # 원문에는 키/요청 정보가 있을 수 있어 허용된 진단 필드만 표시합니다.
+    safe = lambda value: re.sub(r"[^a-zA-Z0-9_. /:-]", "", str(value))[:160]
+    parts = [f"모델: {safe(model_name)} / HTTP {api_error_code(exc)}"]
+    payload = getattr(exc, "details", None) or getattr(exc, "response_json", None)
+    error = payload.get("error", payload) if isinstance(payload, dict) else {}
+    details = error.get("details", []) if isinstance(error, dict) else []
+    for detail in details if isinstance(details, list) else []:
+        if not isinstance(detail, dict):
+            continue
+        for violation in detail.get("violations", []) or []:
+            if isinstance(violation, dict):
+                quota = violation.get("quotaId") or violation.get("quotaMetric")
+                if quota:
+                    parts.append(f"제한 항목: {safe(quota)}")
+                if "quotaValue" in violation:
+                    parts.append(f"허용량: {safe(violation['quotaValue'])}")
+        if "retryDelay" in detail:
+            parts.append(f"Google이 안내한 재시도 대기: {safe(detail['retryDelay'])}")
+    return " / ".join(parts)
+
+
+def generate_with_key(api_key, contents, schema, model_setting):
+    """모델별 제한이면 다른 후보를 시도한 뒤 프로젝트 전환을 결정합니다."""
     client = genai.Client(api_key=api_key.strip(), http_options=types.HttpOptions(timeout=180000))
+    failures = []
+    last_error = None
+    try:
+        for model_name in get_available_models(client, model_setting):
+            try:
+                res = client.models.generate_content(
+                    model=model_name, contents=contents,
+                    config={"response_mime_type": "application/json", "response_schema": schema},
+                )
+            except Exception as exc:
+                failures.append(error_diagnostic(exc, model_name))
+                exc.app_diagnostics = "\n".join(failures)
+                if api_error_code(exc) in (404, 429, 500, 503):
+                    last_error = exc
+                    continue
+                raise
+            return validate_days(json.loads(res.text))
+        if last_error is not None:
+            raise last_error
+        raise ValueError("사용할 수 있는 모델이 없습니다. 관리자에게 모델 설정 확인을 요청해 주세요.")
+    finally:
+        client.close()
+
+
+def generate_with_fallback(api_key, contents, schema, status_box):
+    """매 생성마다 기본 키 우선. 한도 오류일 때만 보조 프로젝트로 한 번 전환합니다."""
+    free_key = setting("GEMINI_FREE_API_KEY").strip()
+    for use_free in (False, True):
+        key = free_key if use_free else api_key.strip()
+        model_setting = "GEMINI_FREE_MODEL" if use_free else "GEMINI_MODEL"
+        status_box.info("🤖 보조 Gemini로 초안을 작성하고 있어요..." if use_free
+                        else "🤖 요일별 계획안 초안을 작성하고 있어요...")
+        try:
+            return generate_with_key(key, contents, schema, model_setting)
+        except Exception as exc:
+            code = api_error_code(exc)
+            diagnostic = getattr(exc, "app_diagnostics", "") or error_diagnostic(exc, "model-list")
+            if code == 429:
+                if use_free:
+                    raise ValueError("기본 Gemini와 보조 Gemini 모두 요청 한도 오류로 생성하지 못했어요.\n" + diagnostic) from None
+                if not free_key:
+                    raise ValueError("사용 가능한 모델을 시도했지만 Google API가 요청을 제한했어요. 잔액 소진을 의미하는 것은 아닙니다. 아래 제한 항목을 확인해 주세요.\n" + diagnostic + "\n(선택 설정: GEMINI_FREE_API_KEY)") from None
+                if free_key == api_key.strip():
+                    raise ValueError("기본 키와 무료 전환용 키가 같아요. 무료 프로젝트의 별도 키를 GEMINI_FREE_API_KEY에 설정해 주세요.") from None
+                continue
+            if code in (401, 403):
+                label = "보조" if use_free else "기본"
+                raise ValueError(f"{label} Gemini API 키 또는 사용 권한을 확인해 주세요.") from None
+            if code:
+                raise RuntimeError("AI 요청에 실패했어요. 아래 모델과 오류 코드를 확인해 주세요.\n" + diagnostic) from None
+            if isinstance(exc, ValueError):
+                raise
+            raise RuntimeError("AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.") from None
+
+
+def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box):
     prompt = f"""
     당신은 어린이집 만 1세 반 보육계획안 자동 작성 전문가입니다.
     첨부된 [표준보육과정 기준표 이미지]와 [실행주안 텍스트]를 분석하여,
@@ -287,29 +373,12 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         "type": "OBJECT", "properties": {key: {"type": "STRING"} for key in fields},
         "required": fields,
     }}
-    for model_name in get_available_models(client):
-        try:
-            status_box.info("🤖 요일별 계획안 초안을 작성하고 있어요...")
-            res = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config={"response_mime_type": "application/json", "response_schema": schema}
-            )
-            return validate_days(json.loads(res.text))
-        except ValueError:
-            raise
-        except Exception as exc:
-            code = getattr(exc, "code", None)
-            if code in (401, 403):
-                raise ValueError("API 키 또는 사용 권한을 확인해 주세요.") from None
-            if code == 429:
-                raise ValueError("AI 사용량 한도에 도달했습니다. 잠시 후 다시 시도하거나 관리자에게 문의해 주세요.") from None
-            continue
-    raise RuntimeError("AI 서버 응답 실패: 잠시 후 다시 시도해 주세요.")
+    return generate_with_fallback(api_key, contents, schema, status_box)
 
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
+st.caption("앱 버전: 2026-09-26-r2 · 모델 재시도 수정")
 st.write("교육 자료와 실행주안을 올리면 요일별 계획안 초안을 만들어 드려요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

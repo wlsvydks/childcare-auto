@@ -195,7 +195,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 
 # ---------------- 4. UI 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
-st.title("🌸 일일보육계획안 24시간 자동 작성 사이트")
+st.title("🌸 일일보육계획안")
 
 col1, col2, col3 = st.columns(3)
 with col1:

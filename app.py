@@ -381,6 +381,76 @@ def validate_evaluation_sources(day, weekly_text):
                                      "원문 기록을 확인한 뒤 다시 만들어 주세요.")
 
 
+def curriculum_catalog():
+    reference = json.loads(TEMPLATE_PATH.with_name("curriculum_reference.json").read_text(encoding="utf-8"))
+    return {f"C{i:03d}": text for i, text in enumerate(reference["entries"], 1)}
+
+
+def finalize_activity_plans(day):
+    """세부내용은 등록 문구로 치환하고 상세 계획의 교사 발화를 검사합니다."""
+    catalog = curriculum_catalog()
+    result = fill_routine_plans(day)
+    fields = ("morning_act_plan", "body_plan", "lang_plan", "sense_plan", "role_plan",
+              "outdoor_am_plan", "pm_cell_1", "pm_cell_2", "pm_cell_3", "pm_cell_4", "outdoor_pm_plan")
+    for field in fields:
+        value = result.get(field, "")
+        if not value.strip():
+            continue
+        lines = value.splitlines()
+        in_details = False
+        for i, line in enumerate(lines):
+            if re.search(r"세부\s*내용\s*[:：]", line):
+                in_details = True
+                content = re.split(r"세부\s*내용\s*[:：]", line, maxsplit=1)[1].strip()
+                prefix = "- 세부내용: "
+            elif in_details and line.strip() and not re.match(
+                    r"\s*(?:[-◈◆]\s*)?(?:활동|\[|\d+[.)]|T\s*[:：])", line):
+                content, prefix = line.strip(), "  "
+            else:
+                if line.strip():
+                    in_details = False
+                continue
+            ids = [s for s in re.split(r"[,\s]+", content) if s]
+            if not ids or any(key not in catalog for key in ids):
+                raise ValueError(f"{field}: 세부내용은 등록된 C번호만 사용해야 합니다.")
+            lines[i] = prefix + ("\n  ".join(catalog[key] for key in ids))
+        # 헤더 없는 경로나 별도의 기준 문구도 그대로 출력하지 않습니다.
+        without_details = re.sub(r"(?m)^.*(?:세부\s*내용|C\d{3}).*$", "", value)
+        if ">" in without_details:
+            raise ValueError(f"{field}: 세부내용 밖에 임의의 기준 문구가 있습니다.")
+        blocks = re.split(r"(?=◈\s*활동명|◆\s*활동명)", value)
+        for block in blocks:
+            if "활동방법" not in block:
+                if "활동목표" in block:
+                    raise ValueError(f"{field}: 상세 활동에 활동방법과 T: 발화가 빠졌습니다.")
+                continue
+            if "세부내용" not in block:
+                raise ValueError(f"{field}: 상세 활동에 등록된 세부내용을 선택하세요.")
+            method = block.split("활동방법", 1)[1]
+            steps = re.split(r"(?m)^\s*\d+[.)]\s*", method)[1:]
+            if not steps or any(not re.search(r"(?m)^\s*T\s*[:：]\s*\S", step) for step in steps):
+                raise ValueError(f"{field}: 활동방법의 각 단계에 T: 교사 발화를 작성하세요.")
+        result[field] = "\n".join(lines)
+    return result
+
+
+def add_evaluation_prompts(day):
+    """관찰 사실을 만들지 않고 기록 전임을 명시한 작성 항목을 제공합니다."""
+    result = dict(day)
+    pairs = {"morning_act_eval": "morning_act_plan", "body_eval": "body_plan",
+             "lang_eval": "lang_plan", "sense_eval": "sense_plan", "role_eval": "role_plan",
+             "outdoor_am_eval": "outdoor_am_plan", "nap_eval": "nap_plan",
+             "outdoor_pm_eval": "outdoor_pm_plan"}
+    pairs["pm_indoor_eval"] = "pm_cell_2"
+    for field, plan in pairs.items():
+        if not result.get(field, "").strip() and result.get(plan, "").strip():
+            result[field] = ("[실행·평가 기록 전]\n- 실행 여부 및 변경 사항:\n"
+                             "- 실제 영아의 반응·말·행동:\n- 교사의 지원 및 다음 놀이 반영:")
+    if not result.get("daily_eval", "").strip():
+        result["daily_eval"] = "[일과평가 기록 전]\n- 실제 일과 운영 및 변경 사항:\n- 관찰에 따른 지원 및 아동지도:"
+    return result
+
+
 def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box, target_date):
     target_label = day_label(target_date)
     prompt = f"""
@@ -491,6 +561,19 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     {sample_daily_text}
     [참고 일일계획안 데이터 끝]
     """
+    prompt += """
+    [최우선 출력 및 검사 규칙]
+    세부내용은 아래 등록 목록에서 활동에 맞는 C번호만 선택해 '- 세부내용: C001' 형식으로
+    작성하세요. 여러 개면 같은 줄에 쉼표로 구분하세요. 앱이 번호를 원문 문구로 바꿉니다.
+    세부내용 문구를 직접 쓰거나 다른 문서·이미지의 표현을 조합하지 마세요.
+    등록 목록은 사용자가 제공한 만 0~1세 4차 기준표에서 확인한 문구이며 최신판이라고 주장하지 마세요.
+    상세 계획에는 활동명을 먼저 적고 활동목표·세부내용 번호·활동자료·활동방법을 작성하세요.
+    활동방법은 번호가 있는 단계로 쓰고 각 단계에 'T: 무엇이 보이니?' 같은 교사 발화를
+    최소 한 줄 포함하세요. 발화는 계획이며 특정 아동의 실제 말이나 반응이 아닙니다.
+    실행·평가는 대상 날짜에 연결되는 실제 기록을 빠짐없이 옮기세요.
+    기록이 없는 평가는 빈 문자열로 반환하세요. 앱이 '기록 전' 작성 항목을 별도로 넣습니다.
+    """
+    prompt += "\n[등록 세부내용 목록]\n" + json.dumps(curriculum_catalog(), ensure_ascii=False)
     contents = [prompt]
     if curriculum_bytes:
         contents.insert(0, types.Part.from_bytes(data=curriculum_bytes, mime_type=mime_type))
@@ -520,12 +603,13 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         if len(days) == 1 and days[0]["date_str"] == target_label:
             try:
                 validate_evaluation_sources(days[0], weekly_text)
-                return days[0]
-            except ValueError:
+                result = finalize_activity_plans(days[0])
+                return add_evaluation_prompts(result)
+            except ValueError as exc:
                 if attempt:
                     raise
-                contents.append("평가에 실행주안 원문과 일치하지 않는 문장이 있습니다. "
-                                "대상 날짜의 실제 기록만 그대로 옮기고 근거가 없으면 빈 문자열로 반환하세요.")
+                contents.append(f"검사 실패: {exc} 해당 오류를 수정하여 전체 JSON을 다시 반환하세요. "
+                                "평가는 대상 날짜의 실제 기록만 옮기고 근거가 없으면 빈 문자열로 반환하세요.")
                 continue
         contents.append(f"날짜가 일치하지 않았습니다. {target_label} 하루만 정확히 작성하세요.")
     raise ValueError(f"{target_label}의 결과를 확인하지 못했어요. 다시 만들기를 누르면 이 날짜부터 이어서 생성합니다.")
@@ -533,7 +617,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r7")
+st.caption("앱 버전: 2026-09-26-r8")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -542,10 +626,13 @@ if not api_key:
     api_key = st.text_input("Gemini API 키", type="password")
 
 f_week = st.file_uploader("실행주안", type=["hwp", "hml"])
+observation_notes = st.text_area("추가 실행·관찰 기록 (선택)",
+    help="날짜·활동명과 실제 실행 여부, 영아 반응, 교사 지원을 적어 주세요. 해당 날짜의 평가에 반영합니다.")
+st.caption("세부내용은 제공하신 만 0~1세 4차 기준표의 등록 문구만 사용합니다. 기록이 없는 평가는 '기록 전' 작성란으로 표시합니다.")
 with st.expander("교육 자료·참고 문서 추가 (선택)"):
     f_curr = st.file_uploader("표준보육과정 사진 또는 PDF", type=["jpg", "jpeg", "png", "pdf"])
     f_daily = st.file_uploader("세부내용·문체 참고용 일일보육계획안", type=["hwp", "hml"])
-    st.caption("활동목표·자료·방법·교사 발화는 주안을 바탕으로 계획합니다. 기존 세부내용은 참고 일일계획안이나 기준표를 올려 주세요. 실제 기록이 없는 평가는 비워 둡니다.")
+    st.caption("목표·방법·교사 발화는 주안을 바탕으로 계획합니다. 다른 기준표를 올려도 등록 세부내용 목록은 자동 변경되지 않습니다.")
 
 if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=True):
     st.session_state.pop("generated_files", None)
@@ -566,11 +653,13 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
                 daily_text = extract_text_from_hwp_bytes(f_daily.getvalue()) if f_daily else "참고 문서 없음"
                 if not week_text.strip():
                     raise ValueError("주안에서 글자를 읽지 못했어요. 이미지가 아닌 글자가 들어 있는 한글 문서를 올려 주세요.")
+                if observation_notes.strip():
+                    week_text += "\n[추가 실행·관찰 기록]\n" + observation_notes.strip()
                 template = TEMPLATE_PATH.read_text(encoding="utf-8")
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"planning-r7", TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r8", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()
@@ -596,7 +685,7 @@ if st.session_state.get("generated_files"):
         for name, data in st.session_state["generated_files"]:
             archive.writestr(name, data)
     st.download_button(f"📥 날짜별 파일 {count}개 한 번에 저장 (ZIP)", buffer.getvalue(), "이번주_보육계획안.zip", "application/zip", use_container_width=True)
-    st.caption("ZIP 압축을 풀면 날짜별 .hml 파일이 들어 있어요. 한글에서 열어 사용할 수 있습니다. .hwp가 필요하면 한글에서 다른 이름으로 저장하세요. 보완된 활동 계획과 원문의 활동·요일 연결을 확인해 주세요. 실제 기록이 없는 평가는 빈칸으로 남습니다.")
+    st.caption("ZIP 압축을 풀면 날짜별 .hml 파일이 들어 있어요. 한글에서 열어 사용할 수 있습니다. .hwp가 필요하면 한글에서 다른 이름으로 저장하세요. 보완된 활동 계획과 원문의 활동·요일 연결을 확인해 주세요. 실제 기록이 없는 평가는 '기록 전' 작성 항목으로 표시됩니다.")
     with st.expander("날짜별로 따로 받기"):
         for name, data in st.session_state["generated_files"]:
             st.download_button(f"📄 {name}", data, name, "application/xml")

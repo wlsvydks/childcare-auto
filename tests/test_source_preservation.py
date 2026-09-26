@@ -93,7 +93,9 @@ class SourcePreservationTests(unittest.TestCase):
             result = NS['analyze_and_generate'](
                 'key', b'', 'image/png', '2026년 4월 20일 ~ 4월 24일',
                 invented['sense_eval'], Mock(), target)
-        self.assertEqual(result, corrected)
+        self.assertEqual(result['date_str'], corrected['date_str'])
+        self.assertEqual(result['sense_eval'], '')
+        self.assertIn('기록 전', result['daily_eval'])
         self.assertEqual(request.call_count, 2)
 
     def test_repeated_ungrounded_result_stops(self):

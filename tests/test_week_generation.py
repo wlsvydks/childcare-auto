@@ -70,7 +70,7 @@ class WeekTests(unittest.TestCase):
         request = Mock(side_effect=[[{"date_str": "2026년 9월 4일 금요일"}], [correct]])
         with patch.dict(NS, {"generate_with_fallback": request, "types": types, "json": json}):
             result = NS["analyze_and_generate"]("key", b"", "image/png", WEEK, "sample", Mock(), target)
-        self.assertEqual(result, correct)
+        self.assertEqual(result['date_str'], correct['date_str'])
         self.assertEqual(request.call_count, 2)
         self.assertEqual(request.call_args.args[2]["items"]["properties"]["date_str"]["enum"], [correct["date_str"]])
 

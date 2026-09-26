@@ -353,12 +353,15 @@ def generate_with_fallback(api_key, contents, schema, status_box):
 
 
 def fill_routine_plans(day):
-    """일상 보육은 수행 결과가 아닌 기본 계획으로 보완합니다."""
+    """일상생활 칸의 활동 수업 형식을 제거하고 기존 일과 문구를 유지합니다."""
     defaults = json.loads(TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8"))
     result = dict(day)
     for field, routine in defaults.items():
         value = result.get(field, "").strip()
-        if value in ("", "-", "–"):
+        expanded_routine = field != "morning_act_plan" and re.search(
+            r"활동\s*(?:목표|자료|방법|명)\s*[:：]?|세부\s*내용\s*[:：]?|"
+            r"(?m:^\s*(?:[-*]\s*)?(?:\d+[.)]|T\s*[:：]))", value)
+        if value in ("", "-", "–") or expanded_routine:
             result[field] = routine
         elif field == "morning_act_plan" and not any(
                 word in value for word in ("건강 상태", "건강상태", "양육자", "웃는 얼굴")):
@@ -397,10 +400,30 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     이미 적힌 활동목표, 세부내용, 활동자료, 활동방법, T: 발화를 우선 찾아
     같은 활동에 해당하면 빠뜨리거나 요약하지 말고 문장 그대로 옮기세요.
     [계획 보완 — 반드시 적용]
-    주안에 활동명만 있어도 계획란을 활동명만으로 끝내지 마세요.
-    오전 실내놀이 중 당일 중점 활동은 활동목표, 활동자료, 활동방법과 T: 발화까지
-    구체적으로 작성하세요. 중점 활동이 표시되지 않았다면 언어 또는 감각·탐색 중
-    주안에 실제로 있는 활동 하나를 선택하여 상세하게 작성하고 다른 활동명도 유지하세요.
+    상세 활동 형식(◈ 활동명, 활동목표, 세부내용, 활동자료, 활동방법, T: 발화)은
+    다음 놀이 칸에만 허용합니다:
+    morning_act_plan(등원 및 조용한 놀이의 놀이 부분),
+    body_plan/lang_plan/sense_plan/role_plan(오전 실내놀이),
+    outdoor_am_plan(오전 실외놀이),
+    pm_cell_1/pm_cell_2/pm_cell_3/pm_cell_4/outdoor_pm_plan(오후 놀이).
+    이 칸에서도 참고 원문이 활동명만 적힌 구성이면 모든 활동을 일괄 확장하지 마세요.
+    등원 및 조용한 놀이는 기존 등원 안내 문장 뒤에 해당 놀이의 활동명을 먼저 적고
+    원문의 상세 계획이 있으면 그 아래에 목표·자료·방법·발화를 유지하세요.
+    활동명을 실행 및 평가 칸으로 옮기지 마세요.
+    [기본 구성 — 확인한 8월 3일 참고 PDF의 계획란 구조]
+    등원 및 조용한 놀이: 일상 등원 안내 뒤에 해당 놀이의 상세 계획을 작성합니다.
+    오전 실내놀이: 신체·언어·감각탐색·역할쌓기 네 영역 모두, 주안에 활동이 있으면
+    각각 활동명·목표·자료·활동방법·T: 발화를 작성합니다. 한 영역만 상세히 쓰지 마세요.
+    오전 실외놀이: 실외 활동의 상세 계획 뒤에, 주안에 대체활동이 있을 때만
+    '[미세먼지 · 우천시 대체활동]'과 그 대체활동의 상세 계획을 작성합니다.
+    오후 실내놀이: [신체]/[언어]/[감각·탐색]/[역할·쌓기]를 구분합니다.
+    오전 반복 놀이는 영역명과 활동명만 적고, 주안의 별도 중점·안전교육 활동은
+    해당 영역에 상세히 작성합니다. 주안에 없는 안전교육이나 그림책을 추가하지 마세요.
+    오후 실외놀이: 주안에 해당 활동이 있으면 상세 계획을 작성합니다.
+    새 참고 문서가 이 구성과 다르면 그 문서의 상세/활동명만 있는 구분을 우선하세요.
+    활동자료가 필요 없는 놀이에 준비물을 억지로 만들지 마세요.
+    이 기본 구성은 작성 형식만 참고합니다. 참고 PDF의 특정 활동명·노래·아동 사례·
+    실행기호·평가는 다른 날짜에 가져오지 마세요.
     원문 상세 계획이 있으면 그대로 우선 사용하고, 없으면 그 활동을 진행하기 위한
     제안 계획으로 목표·자료·방법·발화를 보완하세요. 이는 실행했다는 기록이 아닙니다.
     예: 과일 그림에 끼적이기라면 그림 탐색, 선을 그어보기 등의 활동방법과
@@ -409,8 +432,17 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     계획 문장은 '~살펴본다/~해본다/~돕는다'로 쓰고 '~보였음/~진행함'으로 쓰지 마세요.
     준비물은 해당 활동에 필요한 제안으로만 작성하고 실제 제공·사용했다고 단정하지 마세요.
     만 1세가 교사의 도움을 받아 참여할 수 있는 방법으로 구성하세요.
-    일상 보육은 등원 인사·건강 확인·손 씻기·식사·기저귀 갈기·휴식·귀가의
-    기본 계획을 충분히 채우세요. 실제 측정값, 식사 메뉴, 낮잠 제목은 지어내지 마세요.
+    [일상생활 칸 — 상세 활동 형식 금지]
+    오전 통합보육, 아침 대용식 및 기저귀 갈기, 화장실 다녀오기 및 손 씻기,
+    점심·양치, 낮잠, 낮잠 깨기, 오후 간식, 추가 간식, 귀가, 오후 통합보육은
+    원래의 짧은 일과 안내 문장을 유지하세요. 활동목표·세부내용·활동자료·활동방법,
+    번호를 매긴 단계, T: 발화를 붙이지 마세요. 시간을 채우려고 내용을 늘리지 마세요.
+    morning_care_plan은 '- 통합보육실에서 조용한 놀이 및 휴식하기' 같은 문구,
+    clean_pm_plan(정리정돈 및 손 씻기)은 '- 손 씻기'만 사용하세요.
+    lunch_clean_plan은 놀잇감 정리와 점심 전 손 씻기 안내만 유지하세요.
+    식사·낮잠 등의 기존 여러 안내 문장은 요약하거나 상세 수업 형식으로 바꾸지 마세요.
+    낮잠음악 제목은 원문에서 확인되는 경우만 기존 안내 앞에 유지하세요.
+    실제 측정값, 식사 메뉴, 낮잠 제목은 지어내지 마세요.
     세부내용은 원문에 있는 '영역>내용범주>내용' 문구를 그대로 유지하세요.
     기준표를 참고하는 경우 읽을 수 있는 실제 문구만 정확히 옮기세요.
     이미지가 없거나 글자가 불명확하면 기억으로 공식 문구를 만들어 넣지 마세요.
@@ -446,6 +478,12 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     근거 없는 평가 및 날짜별 사실에는 빈 문자열을 넣으세요.
     계획은 위 계획 보완 원칙에 따라 채우세요. '[작성 필요]' 같은 안내는 넣지 마세요.
 
+    [일상생활 기본 계획 데이터]
+    {TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8")}
+    위 기본 계획 문구를 일상생활 칸에 그대로 사용하세요. 대상 주안에 명시된 변경이나
+    새 참고 문서의 해당 일과 문구가 있으면 그것을 우선하고 임의로 요약하지 마세요.
+    morning_act_plan은 기본 등원 안내 뒤에 놀이 계획을 붙입니다.
+
     [실행주안 데이터]
     {weekly_text}
     [실행주안 데이터 끝]
@@ -465,6 +503,12 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         "required": fields,
     }}
     schema["items"]["properties"]["date_str"]["enum"] = [target_label]
+    routine_fields = json.loads(TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8"))
+    for field in routine_fields:
+        if field != "morning_act_plan":
+            schema["items"]["properties"][field]["description"] = (
+                "일상생활 안내 문장만 사용. 활동목표·세부내용·활동자료·활동방법·번호 단계·T: 발화 금지."
+                + (" 정확히 '- 손 씻기'로 작성." if field == "clean_pm_plan" else ""))
     for attempt in range(2):
         try:
             days = generate_with_fallback(api_key, contents, schema, status_box)
@@ -489,7 +533,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r5")
+st.caption("앱 버전: 2026-09-26-r7")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -526,7 +570,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"planning-r5", week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r7", TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()

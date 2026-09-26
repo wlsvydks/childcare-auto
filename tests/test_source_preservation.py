@@ -8,6 +8,54 @@ from test_documents import NS
 
 
 class SourcePreservationTests(unittest.TestCase):
+    def test_pdf_routines_survive_document_generation_without_shortening(self):
+        from test_documents import ROOT
+        defaults = json.loads((ROOT / 'routine_plans.json').read_text(encoding='utf-8'))
+        document = NS['build_hwp_from_template'](
+            (ROOT / 'template.hml').read_text(encoding='utf-8'), {})
+        text = NS['extract_text_from_hwp_bytes'](document)
+        for field, value in defaults.items():
+            for line in value.splitlines():
+                if line:
+                    with self.subTest(field=field, line=line):
+                        self.assertIn(line, text)
+        self.assertEqual(defaults['clean_pm_plan'], '- 손 씻기')
+        self.assertEqual(len(defaults['lunch_clean_plan'].splitlines()), 2)
+        self.assertIn('손유희를 하며 식사를 준비한다.', defaults['snack_am_plan'])
+        self.assertNotIn('love me', text)
+
+    def test_routine_lesson_expansion_is_removed_from_saved_document(self):
+        from test_documents import ROOT
+        expanded = ('- 활동목표: 식사 전 손을 씻는다.\n'
+                    '- 세부내용: 기본생활>확인되지 않은 문구\n'
+                    '- 활동자료: 비누, 수건\n- 활동방법:\n1. 손을 씻는다.')
+        defaults = json.loads((ROOT / 'routine_plans.json').read_text(encoding='utf-8'))
+        day = {field: expanded for field in defaults if field != 'morning_act_plan'}
+        text = NS['extract_text_from_hwp_bytes'](NS['build_hwp_from_template'](
+            (ROOT / 'template.hml').read_text(encoding='utf-8'), day))
+        for label in ('활동목표:', '세부내용:', '활동자료:', '활동방법:', '1. 손을'):
+            self.assertNotIn(label, text)
+        self.assertIn('- 손 씻기', text)
+        self.assertIn('통합보육실에서 조용한 놀이 및 휴식하기', text)
+
+    def test_play_details_and_plain_routines_are_preserved(self):
+        detail = '◈ 활동명: 공을 굴려요\n- 활동목표: 공을 탐색한다.\n- 활동방법\n1. 공을 굴린다.\nT: 굴려볼까?'
+        play_fields = ('morning_act_plan', 'body_plan', 'lang_plan', 'sense_plan',
+                       'role_plan', 'outdoor_am_plan', 'pm_cell_1', 'pm_cell_2',
+                       'pm_cell_3', 'pm_cell_4', 'outdoor_pm_plan')
+        day = {field: detail for field in play_fields}
+        day['nap_plan'] = '◈ 낮잠음악 [원문 제목]\n- 자신의 자리에 누울 수 있도록 돕는다.'
+        result = NS['fill_routine_plans'](day)
+        for field in play_fields:
+            self.assertIn(detail, result[field])
+        self.assertEqual(result['nap_plan'], day['nap_plan'])
+
+    def test_numbered_routine_without_headers_is_also_removed(self):
+        for expanded in ('1. 손을 씻는다.\n2. 닦는다.', '- T: 손을 씻어볼까?',
+                         '**활동 목표**: 청결을 유지한다.'):
+            self.assertEqual(NS['fill_routine_plans']({'clean_pm_plan': expanded})[
+                'clean_pm_plan'], '- 손 씻기')
+
     def test_sparse_plan_gets_routines_without_inventing_evaluation(self):
         day = {'morning_act_plan': '가방 스스로 정리해보기(ㅇ)',
                'snack_am_plan': '-', 'daily_eval': ''}

@@ -428,6 +428,64 @@ def complete_teacher_dialogue(value):
     return "".join(completed)
 
 
+def normalize_curriculum_sections(value, catalog):
+    """번호/원문/줄바꿈 차이를 정규화하되 등록되지 않은 문장은 거절합니다."""
+    import html
+    value = html.unescape(value).replace("**", "").replace("＞", ">")
+    value = re.sub(r"(?m)^[ \t]*>[ \t]+", "", value)
+    value = re.sub(r"세부\s*내용\s*[:：]?", "세부내용:", value)
+    for label in ("활동명", "활동목표", "활동자료", "활동방법"):
+        value = re.sub(r"\s*".join(label), label, value)
+    canonical = {re.sub(r"\s+", "", text).rstrip("."): text for text in catalog.values()}
+    output, pending = [], None
+
+    def flush():
+        if pending is None:
+            return
+        content = re.sub(r"\s+", "", "".join(pending))
+        selected = []
+        while content:
+            content = content.lstrip("-,;·.()[]")
+            if not content:
+                break
+            match = re.match(r"C\d{3}(?!\d)", content)
+            if match:
+                key = match[0]
+                if key not in catalog:
+                    raise ValueError("기준표에 없는 세부내용 번호입니다. 등록 목록에서 다시 선택하세요.")
+                text = catalog[key]
+                content = content[len(key):]
+            else:
+                key = next((k for k in sorted(canonical, key=len, reverse=True)
+                            if content.startswith(k)), None)
+                if key is None:
+                    raise ValueError("기준표와 일치하지 않는 세부내용입니다. 등록 원문으로 다시 작성하세요.")
+                text = canonical[key]
+                content = content[len(key):]
+            if text not in selected:
+                selected.append(text)
+        if not selected:
+            raise ValueError("세부내용이 비었습니다. 등록 목록에서 선택하세요.")
+        output.append("- 세부내용: " + "\n  ".join(selected))
+
+    for line in value.splitlines():
+        if "세부내용:" in line:
+            flush()
+            pending = [line.split("세부내용:", 1)[1]]
+        elif pending is not None and not re.match(
+                r"\s*(?:[-◈◆]\s*)?(?:활동|\[|\d+[.)]|T\s*[:：])", line):
+            pending.append(re.sub(r"^\s*[-•]\s*", "", line))
+        else:
+            flush()
+            pending = None
+            # '>' 하나가 아니라 실제 영역 경로만 검사합니다.
+            if re.search(r"(?:기본생활|신체운동(?:·건강)?|사회관계|의사소통|예술경험|자연탐구)\s*>", line):
+                raise ValueError("기준표 문구는 세부내용 항목에 작성하세요.")
+            output.append(line)
+    flush()
+    return "\n".join(output)
+
+
 def finalize_activity_plans(day):
     """세부내용은 등록 문구로 치환하고 상세 계획의 교사 발화를 검사합니다."""
     catalog = curriculum_catalog()
@@ -438,29 +496,7 @@ def finalize_activity_plans(day):
         value = result.get(field, "")
         if not value.strip():
             continue
-        value = complete_teacher_dialogue(value)
-        lines = value.splitlines()
-        in_details = False
-        for i, line in enumerate(lines):
-            if re.search(r"세부\s*내용\s*[:：]", line):
-                in_details = True
-                content = re.split(r"세부\s*내용\s*[:：]", line, maxsplit=1)[1].strip()
-                prefix = "- 세부내용: "
-            elif in_details and line.strip() and not re.match(
-                    r"\s*(?:[-◈◆]\s*)?(?:활동|\[|\d+[.)]|T\s*[:：])", line):
-                content, prefix = line.strip(), "  "
-            else:
-                if line.strip():
-                    in_details = False
-                continue
-            ids = [s for s in re.split(r"[,\s]+", content) if s]
-            if not ids or any(key not in catalog for key in ids):
-                raise ValueError(f"{field}: 세부내용은 등록된 C번호만 사용해야 합니다.")
-            lines[i] = prefix + ("\n  ".join(catalog[key] for key in ids))
-        # 헤더 없는 경로나 별도의 기준 문구도 그대로 출력하지 않습니다.
-        without_details = re.sub(r"(?m)^.*(?:세부\s*내용|C\d{3}).*$", "", value)
-        if ">" in without_details:
-            raise ValueError(f"{field}: 세부내용 밖에 임의의 기준 문구가 있습니다.")
+        value = complete_teacher_dialogue(normalize_curriculum_sections(value, catalog))
         blocks = re.split(r"(?=◈\s*활동명|◆\s*활동명)", value)
         for block in blocks:
             if "활동방법" not in block:
@@ -473,7 +509,7 @@ def finalize_activity_plans(day):
             steps = re.split(r"(?m)^\s*\d+[.)]\s*", method)[1:]
             if not steps or any(not re.search(r"(?m)^\s*T\s*[:：]\s*\S", step) for step in steps):
                 raise ValueError(f"{field}: 활동방법의 각 단계에 T: 교사 발화를 작성하세요.")
-        result[field] = "\n".join(lines)
+        result[field] = value
     return result
 
 
@@ -724,7 +760,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r10")
+st.caption("앱 버전: 2026-09-26-r11")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -766,7 +802,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"planning-r10", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r11", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()

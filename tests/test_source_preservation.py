@@ -105,7 +105,7 @@ class SourcePreservationTests(unittest.TestCase):
         with patch.dict(NS, {'generate_with_fallback': request, 'types': types, 'json': json}):
             with self.assertRaisesRegex(ValueError, '확인할 수 없는 문장'):
                 NS['analyze_and_generate']('key', b'', 'image/png', '', '', Mock(), target)
-        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_count, 3)
 
 
 if __name__ == '__main__':

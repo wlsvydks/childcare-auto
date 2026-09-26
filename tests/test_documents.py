@@ -1,5 +1,6 @@
 import ast
 import io
+import json
 import re
 import struct
 import unittest
@@ -7,6 +8,7 @@ import xml.etree.ElementTree as ET
 import zlib
 from copy import deepcopy
 from pathlib import Path
+from datetime import date, timedelta
 
 import olefile
 
@@ -15,8 +17,8 @@ SOURCE = (ROOT / "app.py").read_text(encoding="utf-8")
 # Load document helpers without executing the Streamlit UI or calling Gemini.
 FUNCTIONS = ast.Module(body=[n for n in ast.parse(SOURCE).body
                             if isinstance(n, ast.FunctionDef)], type_ignores=[])
-NS = dict(re=re, io=io, struct=struct, zlib=zlib, olefile=olefile,
-          ET=ET, deepcopy=deepcopy, TEMPLATE_PATH=ROOT / "template.hml")
+NS = dict(re=re, io=io, json=json, struct=struct, zlib=zlib, olefile=olefile,
+          ET=ET, deepcopy=deepcopy, date=date, timedelta=timedelta, TEMPLATE_PATH=ROOT / "template.hml")
 exec(compile(FUNCTIONS, "app.py", "exec"), NS)
 
 

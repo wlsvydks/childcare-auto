@@ -97,6 +97,7 @@ def extract_text_from_hwp_bytes(file_bytes):
 # ---------------- 2. 한글 XML 문서 생성 (template.hml 기반) ----------------
 def build_hwp_from_template(template_hml_text, day_data):
     """한글 양식에 요일별 데이터를 채워 HWPML(.hml) 파일을 생성합니다."""
+    day_data = fill_routine_plans(day_data)
     out_hml = template_hml_text
 
     mapping = {
@@ -351,6 +352,20 @@ def generate_with_fallback(api_key, contents, schema, status_box):
             raise RuntimeError("AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.") from None
 
 
+def fill_routine_plans(day):
+    """일상 보육은 수행 결과가 아닌 기본 계획으로 보완합니다."""
+    defaults = json.loads(TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8"))
+    result = dict(day)
+    for field, routine in defaults.items():
+        value = result.get(field, "").strip()
+        if value in ("", "-", "–"):
+            result[field] = routine
+        elif field == "morning_act_plan" and not any(
+                word in value for word in ("건강 상태", "건강상태", "양육자", "웃는 얼굴")):
+            result[field] = routine + "\n\n" + value
+    return result
+
+
 def validate_evaluation_sources(day, weekly_text):
     """원문에 없는 관찰·지원 문장이 평가로 저장되는 것을 차단합니다."""
     source = re.sub(r"\s+", "", weekly_text)
@@ -366,7 +381,7 @@ def validate_evaluation_sources(day, weekly_text):
 def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box, target_date):
     target_label = day_label(target_date)
     prompt = f"""
-    어린이집 일일보육계획안의 원문을 해당 양식에 옮기는 작업입니다.
+    어린이집 일일보육계획안을 작성합니다. 앞으로 할 계획과 실제 실행기록을 구분하세요.
     정확히 [{target_label}] 하루만 JSON 배열 1개 항목으로 반환하세요.
     date_str은 반드시 "{target_label}"입니다. 참고 문서의 날짜는 사용하지 마세요.
 
@@ -381,14 +396,28 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     [원문 보존]
     이미 적힌 활동목표, 세부내용, 활동자료, 활동방법, T: 발화를 우선 찾아
     같은 활동에 해당하면 빠뜨리거나 요약하지 말고 문장 그대로 옮기세요.
-    활동명만 있는 항목을 임의의 상세 계획으로 늘리지 마세요.
-    자료에 없는 목표, 준비물, 교사 발화, 활동방법, 낮잠 제목을 만들어 넣지 마세요.
+    [계획 보완 — 반드시 적용]
+    주안에 활동명만 있어도 계획란을 활동명만으로 끝내지 마세요.
+    오전 실내놀이 중 당일 중점 활동은 활동목표, 활동자료, 활동방법과 T: 발화까지
+    구체적으로 작성하세요. 중점 활동이 표시되지 않았다면 언어 또는 감각·탐색 중
+    주안에 실제로 있는 활동 하나를 선택하여 상세하게 작성하고 다른 활동명도 유지하세요.
+    원문 상세 계획이 있으면 그대로 우선 사용하고, 없으면 그 활동을 진행하기 위한
+    제안 계획으로 목표·자료·방법·발화를 보완하세요. 이는 실행했다는 기록이 아닙니다.
+    예: 과일 그림에 끼적이기라면 그림 탐색, 선을 그어보기 등의 활동방법과
+    'T: 어떤 과일이 보여?', 'T: 어떤 색으로 그려볼까?' 같은 제안 발화를 작성할 수 있습니다.
+    특정 아동이 어떤 색을 좋아한다거나 어떤 말을 했다는 사실은 만들어 넣지 마세요.
+    계획 문장은 '~살펴본다/~해본다/~돕는다'로 쓰고 '~보였음/~진행함'으로 쓰지 마세요.
+    준비물은 해당 활동에 필요한 제안으로만 작성하고 실제 제공·사용했다고 단정하지 마세요.
+    만 1세가 교사의 도움을 받아 참여할 수 있는 방법으로 구성하세요.
+    일상 보육은 등원 인사·건강 확인·손 씻기·식사·기저귀 갈기·휴식·귀가의
+    기본 계획을 충분히 채우세요. 실제 측정값, 식사 메뉴, 낮잠 제목은 지어내지 마세요.
     세부내용은 원문에 있는 '영역>내용범주>내용' 문구를 그대로 유지하세요.
     기준표를 참고하는 경우 읽을 수 있는 실제 문구만 정확히 옮기세요.
     이미지가 없거나 글자가 불명확하면 기억으로 공식 문구를 만들어 넣지 마세요.
     세부내용의 개수, 활동방법 단계 수, 발화 수, 평가 문장 수를 강제로 맞추지 마세요.
     ◈ 활동명:, - 활동목표:, - 세부내용:, - 활동자료:, - 활동방법, T: 등
-    원문의 기호와 줄바꿈, 문장 종결을 유지하세요. 원문에 없는 항목은 생략하세요.
+    원문의 기호와 줄바꿈, 문장 종결을 유지하세요.
+    공식 세부내용은 근거가 없으면 그 항목만 생략하고 목표·자료·방법·발화는 채우세요.
     계획의 '~한다/~돕는다', 발화의 자연스러운 구어체, 기록의 '~함/~나타남/~있었음'을
     다른 말투로 고치지 마세요. 이미 적힌 문장은 재작성하지 마세요.
 
@@ -414,7 +443,8 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     home_guide_plan/evening_care_plan: 귀가 지도/오후 통합보육 및 귀가.
     safety_check: 기본생활 및 안전. daily_eval: 일과평가 및 아동지도.
     *_eval: 해당 활동의 실행 및 평가. 모든 스키마 필드를 문자열로 반환하되
-    자료에 없는 필드에는 빈 문자열을 넣으세요. '[작성 필요]' 같은 안내는 넣지 마세요.
+    근거 없는 평가 및 날짜별 사실에는 빈 문자열을 넣으세요.
+    계획은 위 계획 보완 원칙에 따라 채우세요. '[작성 필요]' 같은 안내는 넣지 마세요.
 
     [실행주안 데이터]
     {weekly_text}
@@ -459,7 +489,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r4")
+st.caption("앱 버전: 2026-09-26-r5")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -471,7 +501,7 @@ f_week = st.file_uploader("실행주안", type=["hwp", "hml"])
 with st.expander("교육 자료·참고 문서 추가 (선택)"):
     f_curr = st.file_uploader("표준보육과정 사진 또는 PDF", type=["jpg", "jpeg", "png", "pdf"])
     f_daily = st.file_uploader("세부내용·문체 참고용 일일보육계획안", type=["hwp", "hml"])
-    st.caption("기존 세부내용과 말투를 유지하려면 해당 활동이 담긴 일일계획안도 올려 주세요. 원문에 없는 내용과 관찰 기록은 빈칸으로 남깁니다.")
+    st.caption("활동목표·자료·방법·교사 발화는 주안을 바탕으로 계획합니다. 기존 세부내용은 참고 일일계획안이나 기준표를 올려 주세요. 실제 기록이 없는 평가는 비워 둡니다.")
 
 if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=True):
     st.session_state.pop("generated_files", None)
@@ -496,7 +526,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"source-preserving-r4", week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r5", week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()
@@ -522,7 +552,7 @@ if st.session_state.get("generated_files"):
         for name, data in st.session_state["generated_files"]:
             archive.writestr(name, data)
     st.download_button(f"📥 날짜별 파일 {count}개 한 번에 저장 (ZIP)", buffer.getvalue(), "이번주_보육계획안.zip", "application/zip", use_container_width=True)
-    st.caption("ZIP 압축을 풀면 날짜별 .hml 파일이 들어 있어요. 한글에서 열어 사용할 수 있습니다. .hwp가 필요하면 한글에서 다른 이름으로 저장하세요. 원문과 활동·요일 연결을 확인해 주세요. 근거가 없는 항목은 빈칸으로 남습니다.")
+    st.caption("ZIP 압축을 풀면 날짜별 .hml 파일이 들어 있어요. 한글에서 열어 사용할 수 있습니다. .hwp가 필요하면 한글에서 다른 이름으로 저장하세요. 보완된 활동 계획과 원문의 활동·요일 연결을 확인해 주세요. 실제 기록이 없는 평가는 빈칸으로 남습니다.")
     with st.expander("날짜별로 따로 받기"):
         for name, data in st.session_state["generated_files"]:
             st.download_button(f"📄 {name}", data, name, "application/xml")

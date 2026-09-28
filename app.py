@@ -14,6 +14,7 @@ import olefile
 import streamlit as st
 from google import genai
 from google.genai import types
+from hwp_documents import weekly_day_contexts
 
 # 클라우드 Secrets 또는 로컬 환경에서 API 키 가져오기
 def setting(name, default=""):
@@ -215,7 +216,7 @@ def day_label(day):
 
 
 def generate_week_files(api_key, curriculum_bytes, mime_type, weekly_text,
-                        sample_daily_text, template, status_box, completed=None):
+                        sample_daily_text, template, status_box, completed=None, day_contexts=None):
     dates = weekly_dates(weekly_text)
     completed = {} if completed is None else completed
     for index, target in enumerate(dates, 1):
@@ -223,8 +224,14 @@ def generate_week_files(api_key, curriculum_bytes, mime_type, weekly_text,
         if label in completed:
             continue
         status_box.info(f"{len(dates)}일 중 {index}일째 · {label} 작성 중")
+        extra = {}
+        if day_contexts:
+            key = f"{target.day}일({'월화수목금토일'[target.weekday()]})"
+            if key not in day_contexts:
+                raise ValueError(f"{label}의 주안 표를 확인하지 못했습니다.")
+            extra['day_context'] = day_contexts[key]
         day = analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text,
-                                   sample_daily_text, status_box, target)
+                                   sample_daily_text, status_box, target, **extra)
         filename = f"{target.isoformat()}_{'월화수목금토일'[target.weekday()]}요일_일일보육계획안.hml"
         completed[label] = (filename, build_hwp_from_template(template, day))
     files = [completed[day_label(d)] for d in dates]
@@ -362,8 +369,12 @@ def fill_routine_plans(day):
         expanded_routine = field != "morning_act_plan" and re.search(
             r"활동\s*(?:목표|자료|방법|명)\s*[:：]?|세부\s*내용\s*[:：]?|"
             r"(?m:^\s*(?:[-*]\s*)?(?:\d+[.)]|T\s*[:：]))", value)
-        if value in ("", "-", "–") or expanded_routine:
+        # A separately verified focus activity is allowed after the routine.
+        focus = field in ('lunch_plan', 'nap_plan') and re.search(r'활동명\s*[:：][^\n]*\(중점\)', value)
+        if value in ("", "-", "–") or (expanded_routine and not focus):
             result[field] = routine
+        elif focus and routine not in value:
+            result[field] = routine + '\n\n' + value
         elif field == "morning_act_plan" and not any(
                 word in value for word in ("건강 상태", "건강상태", "양육자", "웃는 얼굴")):
             result[field] = routine + "\n\n" + value
@@ -490,7 +501,7 @@ def finalize_activity_plans(day):
     """세부내용은 등록 문구로 치환하고 상세 계획의 교사 발화를 검사합니다."""
     catalog = curriculum_catalog()
     result = fill_routine_plans(day)
-    fields = ("morning_act_plan", "body_plan", "lang_plan", "sense_plan", "role_plan",
+    fields = ("morning_act_plan", "body_plan", "lang_plan", "sense_plan", "role_plan", "lunch_plan", "nap_plan",
               "outdoor_am_plan", "pm_cell_1", "pm_cell_2", "pm_cell_3", "pm_cell_4", "outdoor_pm_plan")
     for field in fields:
         value = result.get(field, "")
@@ -678,17 +689,27 @@ def extract_continued_activities(api_key, weekly_text, target_date, status_box):
     raise ValueError("화살표로 이어지는 활동을 확인하지 못했어요. 다시 시도해 주세요.")
 
 
+def activity_name(value):
+    value = re.sub(r'^\s*[◈◆]?\s*활동명\s*[:：]\s*', '', value)
+    value = re.sub(r'\s*\([ㅇoOxX○×]\)\s*$', '', value)
+    return re.sub(r'\s+', '', value)
+
+
+def activity_blocks(value):
+    return re.split(r"(?m)(?=^[ \t]*[◈◆]?[ \t]*활동명\s*[:：])", value)
+
+
 def shorten_continued_plans(day, continued):
     result = dict(day)
     for field, titles in continued.items():
         value = result.get(field, '')
-        blocks = re.split(r"(?m)(?=^[ \t]*[◈◆]?[ \t]*활동명\s*[:：])", value)
+        blocks = activity_blocks(value)
         for i, block in enumerate(blocks):
             lines = block.splitlines()
             if not lines or not re.search(r"활동명\s*[:：]", lines[0]):
                 continue
-            heading = re.sub(r"\s+", "", lines[0])
-            if any(re.sub(r"\s+", "", title) in heading for title in titles):
+            heading = activity_name(lines[0])
+            if any(activity_name(title) == heading for title in titles):
                 # 다음 대체활동/영역 표시는 삭제하지 않습니다.
                 markers = [line for line in lines[1:] if re.match(r"^\s*\[", line)]
                 blocks[i] = lines[0] + '\n' + ('\n'.join(markers) + '\n' if markers else '')
@@ -702,16 +723,17 @@ def validate_activity_coverage(day, activities, continued=None):
         if field not in labels:
             continue
         value = day.get(field, "")
-        normalized = re.sub(r"\s+", "", value)
+        blocks = [b for b in activity_blocks(value) if re.match(r'\s*[◈◆]?\s*활동명\s*[:：]', b)]
+        expected = {activity_name(t) for t in titles}
+        repeated = {activity_name(t) for t in (continued or {}).get(field, [])}
         for title in titles:
-            if re.sub(r"\s+", "", title) not in normalized:
+            matches = [b for b in blocks if activity_name(b.splitlines()[0]) == activity_name(title)]
+            if len(matches) != 1:
                 raise ValueError(f"{labels[field]}에 주안 활동 '{title}'이 빠졌습니다. 해당 영역에 상세 계획을 작성하세요.")
-        detailed = [t for t in titles if t not in (continued or {}).get(field, [])]
-        if detailed and ("활동방법" not in value or "활동목표" not in value):
-            raise ValueError(f"{labels[field]} 활동명만 넣지 말고 목표·자료·방법을 작성하세요.")
+            if activity_name(title) not in repeated and any(label not in matches[0] for label in ('활동목표', '활동자료', '활동방법')):
+                raise ValueError(f"{labels[field]}의 '{title}'에 목표·자료·방법을 각각 작성하세요.")
         for heading in re.findall(r"활동명\s*[:：]\s*([^\n]+)", value):
-            name = re.sub(r"\s+", "", heading)
-            if not any(re.sub(r"\s+", "", title) in name for title in titles):
+            if activity_name(heading) not in expected:
                 raise ValueError(f"{labels[field]}에 대상 날짜의 목록에 없는 활동명이 있습니다.")
 
 
@@ -735,9 +757,9 @@ def arrange_afternoon_plans(day, activities, continued=None):
             if title in (continued or {}).get(afternoon, []):
                 selected.append("◈ 활동명: " + title)
                 continue
-            normalized = re.sub(r"\s+", "", title)
+            normalized = activity_name(title)
             matches = [b for b in blocks if re.search(r"활동명\s*[:：]", b) and
-                       normalized in re.sub(r"\s+", "", b.splitlines()[0])]
+                       normalized == activity_name(b.splitlines()[0])]
             if len(matches) != 1 or "활동목표" not in matches[0] or "활동방법" not in matches[0]:
                 raise ValueError(f"오후 {label} 추가 활동 '{title}'의 상세 계획을 별도 활동명으로 작성하세요.")
             if matches[0] in selected:
@@ -810,14 +832,129 @@ def generate_afternoon_details(api_key, activities, weekly_text, sample_text, st
     return output
 
 
-def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box, target_date):
+def scoped_day_source(weekly_text, target_date, rows):
+    """Use only this day's table cells; weekly summaries are not daily evidence."""
+    prefix = weekly_text.split('날       짜', 1)[0]
+    # Keep only named metadata, not another day's records or weekly summaries.
+    metadata = '\n'.join(line for line in prefix.splitlines() if re.search(r'주\s*제\s*:|목\s*표\s*:|실시기간\s*:', line))
+    lines = [metadata, '[대상 날짜] ' + day_label(target_date)]
+    for row in rows:
+        lines.append(row['area'])
+        if row['inherited']:
+            lines.append('[이전 운영일에서 이어지는 활동 — 제목만 기재]\n' + row['inherited'])
+        lines.append('[오늘 칸 원문]\n' + row['original'])
+    return '\n'.join(lines)
+
+
+def titles_from_cell(value):
+    value = re.sub(r'\([ㅇoOxX○×]\)|[→←↔]', '', value)
+    return [' '.join(p.split()) for p in re.split(r'\(\+\)|\+', value) if p.strip()]
+
+
+def table_title_only(rows, activities):
+    fields = {'등원및조용한놀이': 'morning_act_plan', '오전실외놀이': 'outdoor_am_plan',
+              '오전실내놀이 신체': 'body_plan', '오전실내놀이 언어': 'lang_plan',
+              '오전실내놀이 감각·탐색': 'sense_plan', '오전실내놀이 역할·쌓기': 'role_plan',
+              '오후활동 실외': 'outdoor_pm_plan', '미세먼지·우천시대체활동': 'outdoor_am_plan'}
+    result = {}
+    for row in rows:
+        field = fields.get(row['area'])
+        inherited = titles_from_cell(row['inherited'])
+        if field:
+            result.setdefault(field, []).extend(inherited)
+            # In the supplied daily plans, incidental morning additions have a
+            # title plus actual observation, not a fabricated full lesson.
+            if field in ('body_plan', 'lang_plan', 'sense_plan', 'role_plan'):
+                result[field].extend(titles_from_cell('+'.join(re.split(r'\(\+\)|\+', row['original'])[1:])))
+        elif row['area'] == '오후활동 실내':
+            for field in ('pm_cell_1', 'pm_cell_2', 'pm_cell_3', 'pm_cell_4'):
+                result[field] = [t for t in activities.get(field, [])
+                                 if activity_name(t) in {activity_name(x) for x in inherited}]
+    return {k: v for k, v in result.items() if v}
+
+
+def morning_activities_from_table(rows):
+    fields = {'오전실내놀이 신체': 'body_plan', '오전실내놀이 언어': 'lang_plan',
+              '오전실내놀이 감각·탐색': 'sense_plan', '오전실내놀이 역할·쌓기': 'role_plan'}
+    result = {}
+    for row in rows:
+        field = fields.get(row['area'])
+        if field:
+            titles = titles_from_cell(row['inherited']) + titles_from_cell(row['original'])
+            result[field] = list(dict.fromkeys(titles))
+    if set(result) != set(fields.values()) or any(not titles for titles in result.values()):
+        raise ValueError('주안 표에서 오전 네 영역의 활동을 확정하지 못했습니다.')
+    return result
+
+
+def validate_focus_activities(day, source):
+    for field in ('lunch_plan', 'nap_plan'):
+        for heading in re.findall(r'활동명\s*[:：]\s*([^\n]+)', day.get(field, '')):
+            if '(중점)' not in heading or activity_name(heading) not in re.sub(r'\s+', '', source):
+                raise ValueError('일상생활 칸의 중점 활동은 해당 날짜 주안에 있는 활동만 작성하세요.')
+
+
+def validate_table_focus(day, rows):
+    for row in rows:
+        if row['area'] != '점심및낮잠':
+            continue
+        for title in titles_from_cell(row['original']):
+            if '(중점)' in title:
+                blocks = [b for b in activity_blocks(day.get('lunch_plan', ''))
+                          if b.splitlines() and activity_name(b.splitlines()[0]) == activity_name(title)]
+                if len(blocks) != 1 or any(x not in blocks[0] for x in ('활동목표', '활동자료', '활동방법')):
+                    raise ValueError(f"점심 일과의 중점 활동 '{title}' 상세 계획이 빠졌습니다.")
+
+
+def apply_table_nap_title(day, rows):
+    result = dict(day)
+    for row in rows:
+        if row['area'] != '점심및낮잠':
+            continue
+        titles = re.findall(r'낮잠(?:음악|동화)\s*\[[^\]]+\]', row['original'])
+        if not titles:
+            titles = re.findall(r'낮잠(?:음악|동화)\s*\[[^\]]+\]', row['inherited'])
+        # Never import a music/story title from a reference daily plan.
+        value = re.sub(r'(?m)^\s*[◈◆]?\s*낮잠(?:음악|동화)\s*\[[^\]]+\][^\n]*\n?', '', result.get('nap_plan', ''))
+        result['nap_plan'] = '\n'.join(['◈ ' + t for t in titles] + [value.strip()]).strip()
+    return result
+
+
+def dated_observation_notes(weekly_text, target_date):
+    notes = weekly_text.partition('[추가 실행·관찰 기록]')[2]
+    selected, active = [], False
+    for line in notes.splitlines():
+        match = re.match(r'\s*(20\d{2})\s*(?:년\s*|[-./])\s*(\d{1,2})\s*(?:월\s*|[-./])\s*(\d{1,2})(?:일)?(?!\d)', line)
+        if match:
+            active = tuple(map(int, match.groups())) == (target_date.year, target_date.month, target_date.day)
+            line = line[match.end():].lstrip(' :：-')
+        if active and line.strip():
+            selected.append(line)
+    return '\n'.join(selected)
+
+
+def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, sample_daily_text, status_box, target_date, day_context=None):
     target_label = day_label(target_date)
     activities = {}
     continued = {}
-    if re.search(r"감각\s*[·∙ㆍ]?\s*탐색|오전\s*실내\s*놀이", weekly_text):
+    evaluation_source = weekly_text
+    if day_context:
+        evaluation_source = dated_observation_notes(weekly_text, target_date)
+        weekly_text = scoped_day_source(weekly_text, target_date, day_context)
+        weekly_text += '\n[해당 날짜의 실제 관찰 기록]\n' + evaluation_source
+    if day_context or re.search(r"감각\s*[·∙ㆍ/]?\s*탐색|오\s*전\s*실\s*내\s*(?:놀\s*이|자유)|신\s*체|언\s*어", weekly_text):
         status_box.info(f"{target_label} · 주안의 영역별 활동을 확인하고 있어요.")
-        activities = extract_day_activities(api_key, weekly_text, target_label, status_box)
-        if re.search(r"20\d{2}", weekly_text):
+        if day_context:
+            activities = morning_activities_from_table(day_context)
+            afternoon = extract_afternoon_activities(api_key, weekly_text, target_label, status_box)
+            if afternoon is None:
+                raise ValueError('주안 표의 오후 실내놀이를 확인하지 못했습니다.')
+            activities.update(afternoon)
+        else:
+            activities = extract_day_activities(api_key, weekly_text, target_label, status_box)
+        if day_context:
+            continued = table_title_only(day_context, activities)
+        elif re.search(r"20\d{2}", weekly_text):
             continued = extract_continued_activities(api_key, weekly_text, target_date, status_box)
     afternoon_details = generate_afternoon_details(api_key, activities, weekly_text, sample_daily_text, status_box, continued)
     prompt = f"""
@@ -942,6 +1079,15 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     기록이 없는 평가는 빈 문자열로 반환하세요. 앱이 '기록 전' 작성 항목을 별도로 넣습니다.
     """
     prompt += "\n[등록 세부내용 목록]\n" + json.dumps(curriculum_catalog(), ensure_ascii=False)
+    prompt += """
+    [실제 샘플에서 확인한 예외 — 앞의 일상생활 형식 금지보다 우선]
+    점심 및 낮잠 행에 '(중점)' 활동이 명시된 날은 lunch_plan의 기본 일과 안내를
+    유지하고 그 아래 해당 중점 활동의 목표·세부내용·자료·방법·발화를 작성하세요.
+    다른 날짜에는 중점 활동을 복사하지 마세요. 낮잠음악·동화는 오늘 주안의 제목을
+    사용하고 참고 일일계획안의 제목이 달라도 가져오지 마세요.
+    표에서 실행기호만 있는 칸은 같은 행 앞 날짜의 활동이 이어집니다.
+    이어받은 활동의 이전 실행기호를 오늘의 실행 사실로 복사하지 마세요.
+    """
     if activities:
         prompt += ("\n[대상 날짜의 필수 활동 목록]\n" + json.dumps(activities, ensure_ascii=False)
                    + "\n각 키의 활동을 반드시 같은 키의 계획에 모두 작성하세요. "
@@ -951,9 +1097,11 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
                    "빈 문자열을 반환해도 됩니다. 앱이 오전 반복 활동명을 채웁니다.")
     contents = [prompt]
     if continued:
-        contents.append("[이전 운영일에서 화살표로 이어지는 활동]\n" + json.dumps(continued, ensure_ascii=False)
+        contents.append("[제목만 기재할 활동: 반복 활동 및 오전의 부수적 추가 놀이]\n" + json.dumps(continued, ensure_ascii=False)
                         + "\n이 목록의 활동은 활동명만 쓰세요. 목표·세부내용·자료·방법·T:는 반복하지 마세요. "
-                        "새로 시작하거나 추가된 활동은 상세히 작성하세요. 당일 실제 평가 기록은 유지하세요.")
+                        "이 목록에 없는 새 활동은 상세히 작성하세요. 당일 실제 평가 기록은 유지하세요.")
+    if afternoon_details:
+        contents.append('오후 pm_cell_1~4의 계획은 앱에서 별도로 완성했습니다. 이 네 필드는 빈 문자열로 반환하세요. 중복 작성하지 마세요.')
     if curriculum_bytes:
         contents.insert(0, types.Part.from_bytes(data=curriculum_bytes, mime_type=mime_type))
     else:
@@ -967,7 +1115,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     schema["items"]["properties"]["date_str"]["enum"] = [target_label]
     routine_fields = json.loads(TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8"))
     for field in routine_fields:
-        if field != "morning_act_plan":
+        if field not in ("morning_act_plan", "lunch_plan", "nap_plan"):
             schema["items"]["properties"][field]["description"] = (
                 "일상생활 안내 문장만 사용. 활동목표·세부내용·활동자료·활동방법·번호 단계·T: 발화 금지."
                 + (" 정확히 '- 손 씻기'로 작성." if field == "clean_pm_plan" else ""))
@@ -982,10 +1130,15 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         if len(days) == 1 and days[0]["date_str"] == target_label:
             try:
                 validate_activity_coverage(days[0], activities, continued)
-                validate_evaluation_sources(days[0], weekly_text)
+                validate_evaluation_sources(days[0], evaluation_source)
+                validate_focus_activities(days[0], weekly_text)
+                if day_context:
+                    validate_table_focus(days[0], day_context)
                 completed_day = dict(days[0], **afternoon_details)
                 arranged = arrange_afternoon_plans(completed_day, activities, continued)
                 result = finalize_activity_plans(shorten_continued_plans(arranged, continued))
+                if day_context:
+                    result = apply_table_nap_title(result, day_context)
                 return add_evaluation_prompts(result)
             except ValueError as exc:
                 if attempt == 2:
@@ -1001,7 +1154,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-26-r16")
+st.caption("앱 버전: 2026-09-28-r17")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")
@@ -1009,13 +1162,17 @@ if not api_key:
     st.info("API 키가 아직 설정되지 않았어요. 아래에 키를 입력하면 이번 접속에서 사용할 수 있어요.")
     api_key = st.text_input("Gemini API 키", type="password")
 
-f_week = st.file_uploader("실행주안", type=["hwp", "hml"])
+def clear_generated_results():
+    st.session_state.pop('generated_files', None)
+
+
+f_week = st.file_uploader("실행주안", type=["hwp", "hml"], on_change=clear_generated_results)
 observation_notes = st.text_area("추가 실행·관찰 기록 (선택)",
-    help="날짜·활동명과 실제 실행 여부, 영아 반응, 교사 지원을 적어 주세요. 해당 날짜의 평가에 반영합니다.")
+    help="각 날짜를 2026-08-03처럼 연도-월-일로 시작하고, 활동명과 실제 관찰 내용을 적어 주세요. 날짜가 없는 기록은 표 분석 모드의 평가에 사용하지 않습니다.", on_change=clear_generated_results)
 st.caption("세부내용은 제공하신 만 0~1세 4차 기준표의 등록 문구만 사용합니다. 기록이 없는 평가는 '기록 전' 작성란으로 표시합니다.")
 with st.expander("교육 자료·참고 문서 추가 (선택)"):
-    f_curr = st.file_uploader("표준보육과정 사진 또는 PDF", type=["jpg", "jpeg", "png", "pdf"])
-    f_daily = st.file_uploader("세부내용·문체 참고용 일일보육계획안", type=["hwp", "hml"])
+    f_curr = st.file_uploader("표준보육과정 사진 또는 PDF", type=["jpg", "jpeg", "png", "pdf"], on_change=clear_generated_results)
+    f_daily = st.file_uploader("세부내용·문체 참고용 일일보육계획안", type=["hwp", "hml"], on_change=clear_generated_results)
     st.caption("목표·방법·교사 발화는 주안을 바탕으로 계획합니다. 다른 기준표를 올려도 등록 세부내용 목록은 자동 변경되지 않습니다.")
 
 if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=True):
@@ -1034,6 +1191,9 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
                 raise ValueError("파일 하나당 15MB 이하로 올려 주세요.")
             with st.spinner("한글 문서를 읽고 있어요..."):
                 week_text = extract_text_from_hwp_bytes(f_week.getvalue())
+                day_contexts = weekly_day_contexts(f_week.getvalue())
+                if not day_contexts:
+                    st.warning('요일별 표 구조를 확정하지 못해 원문 텍스트로 분석합니다. 결과의 날짜별 활동 연결을 확인해 주세요.')
                 daily_text = extract_text_from_hwp_bytes(f_daily.getvalue()) if f_daily else "참고 문서 없음"
                 if not week_text.strip():
                     raise ValueError("주안에서 글자를 읽지 못했어요. 이미지가 아닌 글자가 들어 있는 한글 문서를 올려 주세요.")
@@ -1043,7 +1203,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
             curriculum = f_curr.getvalue() if f_curr else b""
             mime = (f_curr.type or "image/png") if f_curr else "image/png"
             digest = hashlib.sha256()
-            for part in (b"planning-r16", TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
+            for part in (b"planning-r17", json.dumps(day_contexts, ensure_ascii=False).encode(), TEMPLATE_PATH.with_name("curriculum_reference.json").read_bytes(), TEMPLATE_PATH.with_name("routine_plans.json").read_bytes(), week_text.encode(), daily_text.encode(), template.encode(), curriculum, api_key.encode()):
                 digest.update(len(part).to_bytes(8, "big"))
                 digest.update(part)
             fingerprint = digest.hexdigest()
@@ -1052,7 +1212,7 @@ if st.button("✨ 날짜별 계획안 모두 만들기", use_container_width=Tru
                 st.session_state["work_id"] = fingerprint
             with st.spinner("날짜별 파일을 만들고 있어요. 모두 끝나면 전체 다운로드 버튼이 나옵니다."):
                 files = generate_week_files(api_key, curriculum, mime, week_text, daily_text,
-                                            template, status_box, st.session_state["completed_days"])
+                                            template, status_box, st.session_state["completed_days"], day_contexts)
                 st.session_state["generated_files"] = files
         except (ValueError, RuntimeError) as exc:
             st.error(str(exc))

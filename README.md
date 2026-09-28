@@ -1,9 +1,22 @@
 # 일일보육계획안 만들기
 
+## 2026-09-28-r17 변경 사항
+
+제공된 실행주안 양식은 HWP/HML 표의 요일별 칸을 직접 읽습니다. 오전 네 영역의 활동과 반복 관계는 코드에서 연결하고,
+AI에는 대상 날짜의 자료를 제공합니다. 처음 시작한 활동은 상세 계획, 반복 활동과 오전의 부수적 추가 놀이는 제목으로 작성합니다.
+점심·낮잠 행의 `(중점)` 활동은 기본 점심 일과 아래 상세 계획으로 보존합니다. 낮잠음악·동화 제목은 주안을 우선합니다.
+표 구조를 인식하지 못하면 경고 후 기존 텍스트 분석을 사용하므로 요일 연결을 확인해야 합니다.
+
+표 분석 모드에서 평가를 반영하려면 추가 관찰 기록을 `2026-08-03`처럼 날짜로 구분해 입력하세요.
+날짜 없는 기록, 다른 날짜의 기록, 주간 총평은 일일평가로 자동 배분하지 않습니다.
+파일이나 관찰 기록을 바꾸면 이전 다운로드 결과가 사라집니다.
+
+분석한 원본의 차이, 검증 범위 및 제약은 [DOCUMENT_REVIEW.md](DOCUMENT_REVIEW.md)에 정리했습니다.
+
 ## GitHub / Streamlit 배포
 
-실행에 필요한 파일은 `app.py`, `requirements.txt`, `template.hml`, `routine_plans.json`, `curriculum_reference.json`입니다.
-이 다섯 파일을 함께 업데이트하고 Streamlit의 실행 파일은 `app.py`로 지정하세요.
+실행에 필요한 파일은 `app.py`, `hwp_documents.py`, `requirements.txt`, `template.hml`, `routine_plans.json`, `curriculum_reference.json`입니다.
+이 여섯 파일을 함께 업데이트하고 Streamlit의 실행 파일은 `app.py`로 지정하세요.
 `app1.py`, `make_template.py`, 실제 아동 정보가 있는 샘플 문서는 업로드할 필요가 없습니다.
 
 Streamlit 앱 설정의 Secrets에 다음을 입력하세요. API 키를 GitHub에 올리지 마세요.

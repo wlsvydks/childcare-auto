@@ -26,6 +26,7 @@ class ActivityCoverageTests(unittest.TestCase):
         target = date(2026, 9, 21)
         titles = {'body_plan': ['신체 놀이'], 'lang_plan': ['언어 놀이'],
                   'sense_plan': ['도로 위에 탈 것 스티커를 붙여요'], 'role_plan': ['세차장 놀이']}
+        extracted = dict(titles, **{f'pm_cell_{i}': [] for i in range(1, 5)})
         def plan(title):
             return (f'◈ 활동명: {title}\n- 활동목표: 놀이에 관심을 가진다.\n'
                     '- 세부내용: C001\n- 활동자료: 놀잇감\n- 활동방법\n'
@@ -33,7 +34,7 @@ class ActivityCoverageTests(unittest.TestCase):
         correct = {'date_str': NS['day_label'](target),
                    **{k: plan(v[0]) for k, v in titles.items()}}
         missing = dict(correct, sense_plan='')
-        request = Mock(side_effect=[titles, [missing], [correct]])
+        request = Mock(side_effect=[extracted, [missing], [correct]])
         week = '2026년 9월 21일 ~ 9월 23일\n오전 실내놀이\n감각·탐색\n' + '\n'.join(v[0] for v in titles.values())
         with patch.dict(NS, {'generate_with_fallback': request, 'json': json, 'types': types}):
             day = NS['analyze_and_generate']('key', b'', 'image/png', week, '', Mock(), target)

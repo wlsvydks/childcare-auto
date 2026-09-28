@@ -82,6 +82,20 @@ class TableTests(unittest.TestCase):
     def test_unknown_layout_is_not_guessed(self):
         self.assertEqual(weekly_day_contexts(b'<HWPML><TABLE/></HWPML>'), {})
 
+    def test_completely_different_activity_names_come_from_uploaded_cells(self):
+        data = weekly_hml().decode('utf-8').replace('체조해요', '낙엽으로 길을 만들어요').replace('볼링', '눈송이 옮기기')
+        rows = weekly_day_contexts(data.encode('utf-8'))['3일(월)']
+        required = NS['required_activities_from_table'](rows)
+        self.assertEqual(required['body_plan'], ['낙엽으로 길을 만들어요'])
+        self.assertIn('눈송이 옮기기', required['outdoor_am_plan'])
+        self.assertNotIn('볼링', str(required))
+
+    def test_wrapped_goal_is_preserved(self):
+        text = '■ 주 제 : 움직이며 놀이해요\n■ 소 주 제 : 움직이는 것이 재미있어요\n■ 목 표 : 몸을 자유롭게\n움직이며 다양한 활동에 참여해봅니다.\n■ 실시기간 : 2026년 8월 31일 ~ 9월 5일\n날       짜'
+        result = NS['scoped_day_source'](text, date(2026, 8, 31), [])
+        self.assertIn('몸을 자유롭게 움직이며 다양한 활동에 참여해봅니다.', result)
+        self.assertIn('소주제: 움직이는 것이 재미있어요', result)
+
     def test_supplementary_unicode_and_extended_control(self):
         data = '놀이😀'.encode('utf-16le') + b'\x0b\x00' + b'\x00' * 14 + '끝'.encode('utf-16le')
         self.assertEqual(paragraph_text(data), '놀이😀끝')
@@ -92,6 +106,21 @@ class TableTests(unittest.TestCase):
 
 
 class PlanRuleTests(unittest.TestCase):
+    def test_missing_outdoor_and_focus_plans_are_automatically_built(self):
+        rows = weekly_day_contexts(weekly_hml())['5일(수)']
+        activities = NS['required_activities_from_table'](rows)
+        brief = NS['table_title_only'](rows, activities)
+        response = {'goals': ['탐색한다.'], 'curriculum_ids': ['C001'], 'materials': [],
+                    'steps': [{'action': '살펴본다.', 'speech': ['무엇이 보이니?']}]}
+        with patch.dict(NS, {'generate_with_fallback': Mock(return_value=response)}):
+            result = NS['repair_morning_plans']({}, activities, brief, 'key', '', '', Mock(), {})
+        NS['validate_activity_coverage'](result, activities, brief)
+        result = NS['restore_alternative_heading'](result, rows)
+        self.assertIn('[미세먼지 · 우천시 대체활동]', result['outdoor_am_plan'])
+        self.assertIn('놀잇감을 정리해요(중점)', result['lunch_plan'])
+        self.assertIn('친구와 인사해요', result['morning_act_plan'])
+        self.assertIn('장애물', result['outdoor_pm_plan'])
+
     def test_similar_title_is_not_shortened(self):
         day = {'body_plan': plan('공 굴리기') + '\n' + plan('큰 공 굴리기')}
         result = NS['shorten_continued_plans'](day, {'body_plan': ['공 굴리기']})
@@ -138,7 +167,7 @@ class PlanRuleTests(unittest.TestCase):
     def test_table_generation_does_not_copy_other_day_evaluation(self):
         target = date(2026, 8, 6)
         rows = weekly_day_contexts(weekly_hml())['6일(목)']
-        activities = NS['morning_activities_from_table'](rows)
+        activities = NS['required_activities_from_table'](rows)
         day = {'date_str': NS['day_label'](target), **{k: '\n'.join(plan(t) for t in v) for k, v in activities.items()}}
         invented = dict(day, body_eval='월요일에만 기록된 문장')
         request = Mock(side_effect=[[invented], [day]])

@@ -34,13 +34,55 @@ class ActivityCoverageTests(unittest.TestCase):
         correct = {'date_str': NS['day_label'](target),
                    **{k: plan(v[0]) for k, v in titles.items()}}
         missing = dict(correct, sense_plan='')
-        request = Mock(side_effect=[extracted, [missing], [correct]])
+        detail = {'goals': ['놀이에 관심을 가진다.'], 'curriculum_ids': ['C001'],
+                  'materials': ['놀잇감'], 'steps': [{'action': '살펴본다.', 'speech': ['무엇이 보이니?']}]}
+        request = Mock(side_effect=[extracted, [missing], detail])
         week = '2026년 9월 21일 ~ 9월 23일\n오전 실내놀이\n감각·탐색\n' + '\n'.join(v[0] for v in titles.values())
         with patch.dict(NS, {'generate_with_fallback': request, 'json': json, 'types': types}):
             day = NS['analyze_and_generate']('key', b'', 'image/png', week, '', Mock(), target)
         document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'), day)
         self.assertIn(titles['sense_plan'][0], NS['extract_text_from_hwp_bytes'](document))
         self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args.args[2]['type'], 'OBJECT')
+
+    def test_changed_title_is_rebuilt_with_exact_source_title_and_cached(self):
+        title = '[둘이 살짝] 노래에 맞추어 몸을 움직여요(사전)'
+        detail = {'goals': ['음악에 맞추어 움직인다.'], 'curriculum_ids': ['C001'],
+                  'materials': ['음원'], 'steps': [{'action': '음악을 듣는다.', 'speech': ['함께 움직여볼까?']}]}
+        request = Mock(return_value=detail)
+        cache = {}
+        day = {'body_plan': '◈ 활동명: 둘이 살짝 체조', 'body_eval': '실제 기록'}
+        with patch.dict(NS, {'generate_with_fallback': request}):
+            for _ in range(2):
+                result = NS['repair_morning_plans'](day, {'body_plan': [title]}, {},
+                    'key', title, '', Mock(), cache)
+                NS['validate_activity_coverage'](result, {'body_plan': [title]})
+                self.assertIn('◈ 활동명: ' + title, result['body_plan'])
+                self.assertIn('활동방법', result['body_plan'])
+                self.assertEqual(result['body_eval'], '실제 기록')
+        self.assertEqual(request.call_count, 1)
+
+    def test_missing_repeated_activity_is_inserted_without_ai(self):
+        title = '공 굴리기'
+        request = Mock(side_effect=AssertionError('반복 활동에는 AI 호출 불필요'))
+        with patch.dict(NS, {'generate_with_fallback': request}):
+            result = NS['repair_morning_plans']({}, {'body_plan': [title]}, {'body_plan': [title]},
+                'key', title, '', Mock(), {})
+        self.assertEqual(result['body_plan'], '◈ 활동명: 공 굴리기')
+
+    def test_valid_plan_is_kept_and_only_missing_activity_is_generated(self):
+        from test_sample_rules import plan
+        original = plan('공 굴리기')
+        detail = {'goals': ['탐색한다.'], 'curriculum_ids': ['C001'], 'materials': [],
+                  'steps': [{'action': '살펴본다.', 'speech': ['무엇이 보이니?']}]}
+        request = Mock(return_value=detail)
+        with patch.dict(NS, {'generate_with_fallback': request}):
+            result = NS['repair_morning_plans']({'body_plan': original},
+                {'body_plan': ['공 굴리기', '터널 지나가기']}, {}, 'key', '', '', Mock(), {})
+        self.assertEqual(request.call_count, 1)
+        self.assertIn('공 굴리기', result['body_plan'])
+        self.assertIn('터널 지나가기', result['body_plan'])
+        self.assertIn('T: 무엇이 보이니?', result['body_plan'])
 
 
 if __name__ == '__main__':

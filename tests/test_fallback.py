@@ -63,6 +63,34 @@ class FallbackTests(unittest.TestCase):
 
 
 class ProjectRequestTests(unittest.TestCase):
+    def test_timeout_after_quota_preserves_quota_for_project_fallback(self):
+        client = Mock()
+        client.models.list.return_value = [SimpleNamespace(
+            name=name, supported_actions=["generateContent"])
+            for name in ("gemini-3-flash", "gemini-2-flash")]
+        client.models.generate_content.side_effect = [
+            errors.ClientError(429, {}), errors.ServerError(504, {})]
+        with patch.dict(NS, {"genai": SimpleNamespace(Client=Mock(return_value=client)),
+                             "types": types, "setting": lambda *args: ""}):
+            with self.assertRaises(errors.ClientError) as raised:
+                NS["generate_with_key"]("key", [], {}, "GEMINI_MODEL")
+        self.assertEqual(raised.exception.code, 429)
+        self.assertIn("HTTP 504", raised.exception.app_diagnostics)
+        client.close.assert_called_once()
+
+    def test_timeout_can_try_next_model(self):
+        client = Mock()
+        client.models.list.return_value = [SimpleNamespace(
+            name=name, supported_actions=["generateContent"])
+            for name in ("gemini-3-flash", "gemini-2-flash")]
+        client.models.generate_content.side_effect = [
+            errors.ServerError(504, {}), SimpleNamespace(text='{"ok": true}')]
+        with patch.dict(NS, {"genai": SimpleNamespace(Client=Mock(return_value=client)),
+                             "types": types, "setting": lambda *args: ""}):
+            self.assertEqual(NS["generate_with_key"]("key", [], {"type": "OBJECT"},
+                                                     "GEMINI_MODEL"), {"ok": True})
+        self.assertEqual(client.models.generate_content.call_count, 2)
+
     def test_quota_on_first_two_models_still_tries_third(self):
         client = Mock()
         client.models.list.return_value = [SimpleNamespace(

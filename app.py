@@ -305,6 +305,7 @@ def generate_with_key(api_key, contents, schema, model_setting):
     client = genai.Client(api_key=api_key.strip(), http_options=types.HttpOptions(timeout=180000))
     failures = []
     last_error = None
+    quota_error = None
     try:
         for model_name in get_available_models(client, model_setting):
             try:
@@ -316,12 +317,17 @@ def generate_with_key(api_key, contents, schema, model_setting):
             except Exception as exc:
                 failures.append(error_diagnostic(exc, model_name))
                 exc.app_diagnostics = "\n".join(failures)
-                if api_error_code(exc) in (404, 429, 500, 503):
+                if api_error_code(exc) == 429:
+                    quota_error = exc
+                if api_error_code(exc) in (404, 429, 500, 502, 503, 504):
                     last_error = exc
                     continue
                 raise
             data = json.loads(res.text)
             return data if schema.get("type") == "OBJECT" else validate_days(data)
+        if quota_error is not None:
+            quota_error.app_diagnostics = "\n".join(failures)
+            raise quota_error
         if last_error is not None:
             raise last_error
         raise ValueError("사용할 수 있는 모델이 없습니다. 관리자에게 모델 설정 확인을 요청해 주세요.")
@@ -343,6 +349,15 @@ def generate_with_fallback(api_key, contents, schema, status_box):
             code = api_error_code(exc)
             diagnostic = getattr(exc, "app_diagnostics", "") or error_diagnostic(exc, "model-list")
             if code == 429:
+                diagnostic = (
+                    "Google Gemini API의 사용량 한도를 초과했습니다. "
+                    "PerDay는 일일 한도, PerMinute는 분당 한도입니다. "
+                    "아래 재시도 대기 시간이 지나거나 한도가 초기화된 뒤 다시 시도해 주세요. "
+                    "계속 사용하려면 Google AI Studio에서 이 API 키가 속한 프로젝트의 "
+                    "사용량과 결제 설정을 확인해 주세요. 같은 프로젝트의 키를 새로 만들어도 한도는 공유됩니다.\n"
+                    + diagnostic
+                )
+            if code == 429:
                 if use_free:
                     raise ValueError("기본 Gemini와 보조 Gemini 모두 요청 한도 오류로 생성하지 못했어요.\n" + diagnostic) from None
                 if not free_key:
@@ -353,6 +368,10 @@ def generate_with_fallback(api_key, contents, schema, status_box):
             if code in (401, 403):
                 label = "보조" if use_free else "기본"
                 raise ValueError(f"{label} Gemini API 키 또는 사용 권한을 확인해 주세요.") from None
+            if code == 504:
+                raise RuntimeError("Google AI 응답 시간이 초과됐습니다(HTTP 504). 잠시 후 다시 시도해 주세요. "
+                                   "반복되면 입력 문서 분량을 줄이거나 GEMINI_MODEL 설정을 확인해 주세요.\n"
+                                   + diagnostic) from None
             if code:
                 raise RuntimeError("AI 요청에 실패했어요. 아래 모델과 오류 코드를 확인해 주세요.\n" + diagnostic) from None
             if isinstance(exc, ValueError):

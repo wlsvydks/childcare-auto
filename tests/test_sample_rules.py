@@ -188,7 +188,29 @@ class PlanRuleTests(unittest.TestCase):
         self.assertIn('◈ 활동명: 손 지문\n', result['pm_cell_2'])
         self.assertEqual(result['pm_cell_4'], '[역할·쌓기]\n◈ 활동명: 병원 놀이 (ㅇ)')
         self.assertEqual(result['safety_check'], '물기 닦기')
+        self.assertIn('던진다.\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (ㅇ)', result['outdoor_am_plan'])
         self.assertEqual(NS['apply_table_marks'](result, rows), result)
+
+    def test_marks_are_normalized_and_safety_lines_lose_bullets(self):
+        rows = weekly_day_contexts(weekly_hml())['5일(수)']
+        day = {'morning_act_plan': '- 등원 인사\n◈ 활동명: 친구와 인사해요(ㅇ)',
+               'role_plan': '◈ 활동명: 벽돌 블록(ㅇ)\n- 활동목표: 쌓는다.',
+               'outdoor_am_plan': '◈ 활동명: 공 놀이\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링',
+               'safety_check': '◈ 물기 닦기(ㅇ)\n- 청결점검'}
+        result = NS['apply_table_marks'](day, rows)
+        # 그날 칸에 기호가 있으면 ' (ㅇ)' 형식으로 정리하고, 기호가 없는 칸의 활동은 손대지 않습니다.
+        self.assertEqual(result['morning_act_plan'], '- 등원 인사\n◈ 활동명: 친구와 인사해요 (ㅇ)')
+        self.assertEqual(result['role_plan'], day['role_plan'])
+        self.assertEqual(result['outdoor_am_plan'],
+                         '◈ 활동명: 공 놀이 (x)\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (ㅇ)')
+        self.assertEqual(result['safety_check'], '물기 닦기 (ㅇ)\n청결점검 (ㅇ)')
+
+    def test_goal_lines_are_joined_to_label_without_bullets(self):
+        value = '◈ 활동명: X\n- 활동목표:\n· 하나를 한다.\n· 둘을 경험한다.\n- 세부내용: C001\n- 활동자료: 없음'
+        self.assertEqual(NS['normalize_goal_lines'](value),
+                         '◈ 활동명: X\n- 활동목표: 하나를 한다.\n  둘을 경험한다.\n- 세부내용: C001\n- 활동자료: 없음')
+        kept = '◈ 활동명: X\n- 활동목표: 하나를 한다.\n  둘을 경험한다.\n- 세부내용: C001'
+        self.assertEqual(NS['normalize_goal_lines'](kept), kept)
 
     def test_nap_title_uses_weekly_cell_instead_of_reference(self):
         rows = weekly_day_contexts(weekly_hml())['7일(금)']

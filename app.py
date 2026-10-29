@@ -539,7 +539,7 @@ def finalize_activity_plans(day):
         value = result.get(field, "")
         if not value.strip():
             continue
-        value = complete_teacher_dialogue(normalize_curriculum_sections(value, catalog))
+        value = complete_teacher_dialogue(normalize_curriculum_sections(normalize_goal_lines(value), catalog))
         blocks = re.split(r"(?=◈\s*활동명|◆\s*활동명)", value)
         for block in blocks:
             if "활동방법" not in block:
@@ -1044,20 +1044,22 @@ def table_marks(rows):
 
 
 def add_marks(value, main, plus, repeated=None, repeated_marks=None):
-    """활동명 줄 끝에 기호를 붙입니다. 이미 기호가 있으면 두지 않습니다."""
+    """활동명 줄 끝에 ' (ㅇ)' 형식으로 기호를 붙입니다. 기호가 없는 칸의 활동은 그대로 둡니다."""
     lines = []
     for line in value.splitlines():
         heading = re.match(r'^(\s*[◈◆]?\s*활동명\s*[:：]\s*)(.+?)\s*$', line)
-        if heading and not re.search(r'\(\s*[ㅇoOxX○×]\s*\)\s*$', heading[2]):
+        if heading:
             name = activity_name(heading[2])
             if repeated and name in repeated:
                 mark = repeated_marks[1].get(name, repeated_marks[0])
             else:
                 mark = plus.get(name, main)
             if mark:
-                line = f"{heading[1]}{heading[2]} ({mark})"
+                title = re.sub(r'\s*\(\s*[ㅇoOxX○×]\s*\)\s*$', '', heading[2])
+                line = f"{heading[1]}{title} ({mark})"
         lines.append(line)
-    return '\n'.join(lines)
+    # 줄 끝의 개행을 보존해 뒤에 이어지는 '[미세먼지 · 우천시 대체활동]' 제목이 붙지 않게 합니다.
+    return '\n'.join(lines) + value[len(value.rstrip('\r\n')):]
 
 
 def apply_table_marks(day, rows):
@@ -1089,10 +1091,31 @@ def apply_table_marks(day, rows):
                                   repeated=repeated, repeated_marks=marks.get(areas[source], ('', {})))
     if result.get('safety_check') and marks.get('기본생활및안전', ('', {}))[0]:
         mark = marks['기본생활및안전'][0]
-        result['safety_check'] = '\n'.join(
-            f"{line} ({mark})" if line.strip() and not re.search(r'\(\s*[ㅇoOxX○×]\s*\)\s*$', line) else line
-            for line in result['safety_check'].splitlines())
+        lines = []
+        for line in result['safety_check'].splitlines():
+            # 실제 문서는 '청결점검 (ㅇ)'처럼 기호 없이 쓰고 끝에 실행기호만 붙입니다.
+            text = re.sub(r'^\s*[◈◆\-·•]\s*', '', line).strip()
+            text = re.sub(r'\s*\(\s*[ㅇoOxX○×]\s*\)\s*$', '', text)
+            lines.append(f"{text} ({mark})" if text else line)
+        result['safety_check'] = '\n'.join(lines)
     return result
+
+
+def normalize_goal_lines(value):
+    """'- 활동목표:' 뒤에 첫 문장을 같은 줄에 두고, 목표 줄의 '·' 글머리 기호를 들여쓰기로 바꿉니다."""
+    value = re.sub(r'(?m)^(\s*-\s*활동목표\s*[:：])[ \t]*\n[ \t]*', r'\1 ', value)
+    lines, in_goal = [], False
+    for line in value.splitlines():
+        if re.match(r'^\s*-\s*활동목표\s*[:：]', line):
+            in_goal = True
+            lines.append(re.sub(r'(활동목표\s*[:：]\s*)[·•]\s*', r'\1', line))
+            continue
+        if in_goal and (re.match(r'^\s*[◈◆]', line) or re.match(r'^\s*-\s', line) or not line.strip()):
+            in_goal = False
+        if in_goal:
+            line = '  ' + re.sub(r'^\s*[·•]?\s*', '', line)
+        lines.append(line)
+    return '\n'.join(lines)
 
 
 def apply_table_nap_title(day, rows):
@@ -1358,7 +1381,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-10-29-r22")
+st.caption("앱 버전: 2026-10-29-r23")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

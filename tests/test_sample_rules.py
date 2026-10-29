@@ -164,6 +164,13 @@ class PlanRuleTests(unittest.TestCase):
         self.assertNotIn('다른 음악', result['nap_plan'])
         self.assertIn('- 휴식을 돕는다.', result['nap_plan'])
 
+    def test_nap_title_with_colon_is_not_duplicated(self):
+        rows = weekly_day_contexts(weekly_hml())['7일(금)']
+        plan = '◈ 낮잠동화 [사이좋게 지내자]\n낮잠동화: [사이좋게 지내자]\n- 휴식을 돕는다.'
+        result = NS['apply_table_nap_title']({'nap_plan': plan}, rows)
+        self.assertEqual(result['nap_plan'].count('사이좋게 지내자'), 1)
+        self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자]\n- 휴식을 돕는다.')
+
     def test_table_generation_does_not_copy_other_day_evaluation(self):
         target = date(2026, 8, 6)
         rows = weekly_day_contexts(weekly_hml())['6일(목)']

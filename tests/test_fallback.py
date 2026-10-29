@@ -107,6 +107,31 @@ class ProjectRequestTests(unittest.TestCase):
         self.assertEqual(client.models.generate_content.call_count, 3)
         client.close.assert_called_once()
 
+    def test_stable_flash_models_come_before_omni_and_lite(self):
+        client = Mock()
+        client.models.list.return_value = [SimpleNamespace(
+            name=f"models/{name}", supported_actions=["generateContent"])
+            for name in ("gemini-omni-1.1-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash",
+                         "gemini-3-flash", "gemini-2.5-flash-image")]
+        with patch.dict(NS, {"setting": lambda *args: ""}):
+            self.assertEqual(NS["get_available_models"](client),
+                             ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+                              "gemini-omni-1.1-flash"])
+
+    def test_bad_request_on_one_model_tries_next_model(self):
+        client = Mock()
+        client.models.list.return_value = [SimpleNamespace(
+            name=name, supported_actions=["generateContent"])
+            for name in ("gemini-omni-1.1-flash", "gemini-2.5-flash")]
+        client.models.generate_content.side_effect = [
+            errors.ClientError(400, {}), SimpleNamespace(text='{"ok": true}')]
+        with patch.dict(NS, {"genai": SimpleNamespace(Client=Mock(return_value=client)),
+                             "types": types, "setting": lambda *args: ""}):
+            self.assertEqual(NS["generate_with_key"]("key", [], {"type": "OBJECT"},
+                                                     "GEMINI_MODEL"), {"ok": True})
+        self.assertEqual([c.kwargs["model"] for c in client.models.generate_content.call_args_list],
+                         ["gemini-2.5-flash", "gemini-omni-1.1-flash"])
+
     def test_diagnostic_contains_quota_but_not_raw_error_or_key(self):
         exc = errors.ClientError(429, {"error": {
             "message": "secret-key-do-not-display", "details": [

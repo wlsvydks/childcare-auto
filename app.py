@@ -254,7 +254,15 @@ def get_available_models(client, model_setting="GEMINI_MODEL"):
             names.append(name)
     if not names:
         raise ValueError(f"사용 가능한 모델이 없습니다. 관리자에게 {model_setting} 설정을 요청해 주세요.")
-    return sorted(set(names), reverse=True)
+    return sorted(set(names), key=model_priority, reverse=True)
+
+
+def model_priority(name):
+    """정식 'gemini-<버전>-flash'를 버전 높은 순으로 먼저 쓰고, 그 외 이름(omni 등)은 뒤로 보냅니다."""
+    match = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash(-lite)?", name)
+    if not match:
+        return (0, 0.0, name)
+    return (1 if match.group(2) else 2, float(match.group(1)), name)
 
 
 def validate_days(data):
@@ -319,7 +327,7 @@ def generate_with_key(api_key, contents, schema, model_setting):
                 exc.app_diagnostics = "\n".join(failures)
                 if api_error_code(exc) == 429:
                     quota_error = exc
-                if api_error_code(exc) in (404, 429, 500, 502, 503, 504):
+                if api_error_code(exc) in (400, 404, 429, 500, 502, 503, 504):
                     last_error = exc
                     continue
                 raise
@@ -1256,7 +1264,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-09-28-r19")
+st.caption("앱 버전: 2026-10-29-r20")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

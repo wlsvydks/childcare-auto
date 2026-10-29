@@ -218,6 +218,11 @@ def day_label(day):
 def generate_week_files(api_key, curriculum_bytes, mime_type, weekly_text,
                         sample_daily_text, template, status_box, completed=None, day_contexts=None):
     dates = weekly_dates(weekly_text)
+    if day_contexts:
+        # 주안 표에서 하루 전체가 휴원으로 병합된 날짜는 만들지 않습니다.
+        dates = [d for d in dates if day_contexts.get(f"{d.day}일({'월화수목금토일'[d.weekday()]})") != []]
+        if not dates:
+            raise ValueError("실행주안의 기간에 생성할 운영일이 없습니다. 주안의 휴원 표시를 확인해 주세요.")
     completed = {} if completed is None else completed
     for index, target in enumerate(dates, 1):
         label = day_label(target)
@@ -1017,6 +1022,79 @@ def validate_table_focus(day, rows):
                     raise ValueError(f"점심 일과의 중점 활동 '{title}' 상세 계획이 빠졌습니다.")
 
 
+def cell_mark(text):
+    """칸에 적힌 마지막 실행기호를 (ㅇ)/(x) 두 가지로 정리합니다. 없으면 빈 문자열."""
+    marks = re.findall(r'\(\s*([ㅇoOxX○×])\s*\)', text)
+    if not marks:
+        return ''
+    return 'x' if marks[-1] in 'xX×' else 'ㅇ'
+
+
+def table_marks(rows):
+    """영역별로 (기본 활동 기호, {추가 활동명: 기호})를 돌려줍니다. + 추가 활동은 자기 기호만 가집니다."""
+    result = {}
+    for row in rows:
+        segments = re.split(r'\(\+\)|\+', row['original'])
+        plus = {}
+        for segment in segments[1:]:
+            for title in titles_from_cell(segment):
+                plus[activity_name(title)] = cell_mark(segment)
+        result[row['area']] = (cell_mark(segments[0]), plus)
+    return result
+
+
+def add_marks(value, main, plus, repeated=None, repeated_marks=None):
+    """활동명 줄 끝에 기호를 붙입니다. 이미 기호가 있으면 두지 않습니다."""
+    lines = []
+    for line in value.splitlines():
+        heading = re.match(r'^(\s*[◈◆]?\s*활동명\s*[:：]\s*)(.+?)\s*$', line)
+        if heading and not re.search(r'\(\s*[ㅇoOxX○×]\s*\)\s*$', heading[2]):
+            name = activity_name(heading[2])
+            if repeated and name in repeated:
+                mark = repeated_marks[1].get(name, repeated_marks[0])
+            else:
+                mark = plus.get(name, main)
+            if mark:
+                line = f"{heading[1]}{heading[2]} ({mark})"
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def apply_table_marks(day, rows):
+    """실제 일일계획안처럼 활동명 뒤에 그날 주안 칸의 실행기호 (ㅇ)/(x)를 붙입니다.
+
+    24일치 실제 문서에서 활동명의 94%에 기호가 있었고, 기호는 주안의 해당 요일 칸과 일치했습니다.
+    오후 실내의 오전 반복 활동은 오전 칸의 기호를, 기본생활 및 안전은 각 줄에 기호를 붙입니다.
+    """
+    marks = table_marks(rows)
+    result = dict(day)
+    areas = {'morning_act_plan': '등원및조용한놀이', 'body_plan': '오전실내놀이 신체', 'lang_plan': '오전실내놀이 언어',
+             'sense_plan': '오전실내놀이 감각·탐색', 'role_plan': '오전실내놀이 역할·쌓기',
+             'outdoor_pm_plan': '오후활동 실외', 'lunch_plan': '점심및낮잠'}
+    for field, area in areas.items():
+        if area in marks and result.get(field):
+            result[field] = add_marks(result[field], *marks[area])
+    if result.get('outdoor_am_plan') and '오전실외놀이' in marks:
+        head, sep, tail = result['outdoor_am_plan'].partition('[미세먼지 · 우천시 대체활동]')
+        head = add_marks(head, *marks['오전실외놀이'])
+        if sep and '미세먼지·우천시대체활동' in marks:
+            tail = add_marks(tail, *marks['미세먼지·우천시대체활동'])
+        result['outdoor_am_plan'] = head + sep + tail
+    for field, source in (('pm_cell_1', 'body_plan'), ('pm_cell_2', 'lang_plan'),
+                          ('pm_cell_3', 'sense_plan'), ('pm_cell_4', 'role_plan')):
+        if not result.get(field) or '오후활동 실내' not in marks:
+            continue
+        repeated = {activity_name(h) for h in re.findall(r'활동명\s*[:：]\s*([^\n]+)', day.get(source, ''))}
+        result[field] = add_marks(result[field], *marks['오후활동 실내'],
+                                  repeated=repeated, repeated_marks=marks.get(areas[source], ('', {})))
+    if result.get('safety_check') and marks.get('기본생활및안전', ('', {}))[0]:
+        mark = marks['기본생활및안전'][0]
+        result['safety_check'] = '\n'.join(
+            f"{line} ({mark})" if line.strip() and not re.search(r'\(\s*[ㅇoOxX○×]\s*\)\s*$', line) else line
+            for line in result['safety_check'].splitlines())
+    return result
+
+
 def apply_table_nap_title(day, rows):
     result = dict(day)
     for row in rows:
@@ -1264,6 +1342,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
                 if day_context:
                     result = apply_table_nap_title(result, day_context)
                     result = restore_alternative_heading(result, day_context)
+                    result = apply_table_marks(result, day_context)
                 return add_evaluation_prompts(result)
             except ValueError as exc:
                 if attempt == 2:
@@ -1279,7 +1358,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-10-29-r21")
+st.caption("앱 버전: 2026-10-29-r22")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

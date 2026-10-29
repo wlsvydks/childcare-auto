@@ -15,13 +15,14 @@ def plan(title):
             '- 활동자료: 놀잇감\n- 활동방법\n1. 함께 살펴본다.\nT: 무엇이 보이니?')
 
 
-def weekly_hml():
+def weekly_hml(holiday=None):
+    """holiday: 0~4 중 하나를 주면 그 요일 칸 전체가 '휴원'으로 세로 병합된 주안을 만듭니다."""
     root = ET.Element('HWPML')
     table = ET.SubElement(root, 'TABLE')
-    def cell(row, col, text, width=12010, span=1):
+    def cell(row, col, text, width=12010, span=1, rowspan=1):
         r = ET.SubElement(table, 'ROW')
         c = ET.SubElement(r, 'CELL', RowAddr=str(row), ColAddr=str(col),
-                          ColSpan=str(span), RowSpan='1', Width=str(width))
+                          ColSpan=str(span), RowSpan=str(rowspan), Width=str(width))
         ET.SubElement(ET.SubElement(c, 'P'), 'CHAR').text = text
     for col, day, weekday in zip((2, 3, 4, 5, 7), range(3, 8), '월화수목금'):
         cell(0, col, f'{day}일 ({weekday})')
@@ -43,7 +44,11 @@ def weekly_hml():
             cell(row, 1, area, 5576)
         else:
             cell(row, 0, label, 8280, 2)
-        for col, value in zip((2, 3, 4, 6, 8), values):
+        for index, (col, value) in enumerate(zip((2, 3, 4, 6, 8), values)):
+            if index == holiday:
+                if row == 1:
+                    cell(row, col, '지방선거일\n(휴원)', rowspan=len(rows))
+                continue
             cell(row, col, value)
     return ET.tostring(root, encoding='utf-8')
 
@@ -156,6 +161,34 @@ class PlanRuleTests(unittest.TestCase):
     def test_observation_notes_are_selected_by_full_date(self):
         source = '[추가 실행·관찰 기록]\n날짜 없는 기록\n2026-08-03\n월요일 기록\n2026년 8월 4일\n화요일 기록'
         self.assertEqual(NS['dated_observation_notes'](source, date(2026, 8, 4)), '화요일 기록')
+
+    def test_holiday_column_is_skipped_and_arrows_jump_over_it(self):
+        contexts = weekly_day_contexts(weekly_hml(holiday=2))
+        self.assertEqual(contexts['5일(수)'], [])
+        self.assertEqual(len(contexts['3일(월)']), 11)
+        thursday = {r['area']: r for r in contexts['6일(목)']}
+        self.assertEqual(thursday['등원및조용한놀이']['inherited'], '친구와 인사해요')
+        self.assertEqual(thursday['오전실내놀이 신체']['inherited'], '징검다리')
+        self.assertEqual(thursday['오전실내놀이 신체']['original'], '(ㅇ)')
+
+    def test_marks_follow_the_day_cell_of_each_area(self):
+        rows = weekly_day_contexts(weekly_hml())['4일(화)']
+        day = {'body_plan': '◈ 활동명: 징검다리\n- 활동목표: 건넌다.',
+               'role_plan': '◈ 활동명: 병원 놀이',
+               'outdoor_am_plan': '◈ 활동명: 공 놀이\n- 활동목표: 던진다.\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링',
+               'pm_cell_2': '[언어]\n◈ 활동명: 안전 그림책\n\n◈ 활동명: 손 지문\n- 활동목표: 찍는다.',
+               'pm_cell_4': '[역할·쌓기]\n◈ 활동명: 병원 놀이',
+               'safety_check': '물기 닦기'}
+        result = NS['apply_table_marks'](day, rows)
+        self.assertEqual(result['body_plan'].splitlines()[0], '◈ 활동명: 징검다리')
+        self.assertEqual(result['role_plan'], '◈ 활동명: 병원 놀이 (ㅇ)')
+        self.assertIn('◈ 활동명: 공 놀이 (x)', result['outdoor_am_plan'])
+        self.assertIn('◈ 활동명: 볼링 (ㅇ)', result['outdoor_am_plan'])
+        self.assertIn('◈ 활동명: 안전 그림책 (ㅇ)', result['pm_cell_2'])
+        self.assertIn('◈ 활동명: 손 지문\n', result['pm_cell_2'])
+        self.assertEqual(result['pm_cell_4'], '[역할·쌓기]\n◈ 활동명: 병원 놀이 (ㅇ)')
+        self.assertEqual(result['safety_check'], '물기 닦기')
+        self.assertEqual(NS['apply_table_marks'](result, rows), result)
 
     def test_nap_title_uses_weekly_cell_instead_of_reference(self):
         rows = weekly_day_contexts(weekly_hml())['7일(금)']

@@ -103,19 +103,36 @@ def weekly_day_contexts(file_bytes):
         first_col = headers[0]['col']
         headers = [c for c in headers if not re.search(r'[토일]\)', c['text'])]
         output = {re.sub(r'\s+', '', c['text']): [] for c in headers}
+        header_row = headers[0]['row']
+        day_width = lambda c: any(abs(c['width'] - h['width']) <= 100 for h in headers)
+        # 공휴일(선거일, 제헌절 등)은 그 요일 칸 전체가 세로로 병합되어 있습니다.
+        # 병합 칸이 시작하는 행에서 몇 번째 요일인지 확인해 그 요일을 휴원으로 처리합니다.
+        holidays = []
+        for cell in cells:
+            if cell['row'] > header_row and cell['col'] >= first_col and cell['rowspan'] >= 3 and day_width(cell):
+                same_row = sorted([c for c in cells if c['row'] == cell['row'] and c['col'] >= first_col and day_width(c)],
+                                  key=lambda c: c['col'])
+                index = same_row.index(cell)
+                if index < len(headers):
+                    holidays.append((cell, index))
+        holiday_cells = {id(cell) for cell, _ in holidays}
+        closed_keys = {re.sub(r'\s+', '', headers[index]['text']) for _, index in holidays}
         previous = {}
-        row_ids = sorted({c['row'] for c in cells if c['row'] > headers[0]['row']})
+        row_ids = sorted({c['row'] for c in cells if c['row'] > header_row})
         for row in row_ids:
             labels = [c for c in cells if c['col'] < first_col and c['row'] <= row < c['row'] + c['rowspan']]
             label = ' '.join(re.sub(r'\s+', '', c['text']) for c in sorted(labels, key=lambda c: c['col']))
             label = re.sub(r'[∙ㆍ/]', '·', label)
             if not label or re.search(r'안전교육|지역사회', label):
                 continue
-            values = sorted([c for c in cells if c['row'] == row and c['col'] >= first_col], key=lambda c: c['col'])
-            # A weekday row must have at least five distinct cells of the day width.
-            if len(values) < 5 or any(abs(c['width'] - h['width']) > 100 for c, h in zip(values[:5], headers[:5])):
+            closed = {index for cell, index in holidays if cell['row'] <= row < cell['row'] + cell['rowspan']}
+            active = [h for i, h in enumerate(headers) if i not in closed]
+            values = sorted([c for c in cells if c['row'] == row and c['col'] >= first_col and id(c) not in holiday_cells],
+                            key=lambda c: c['col'])
+            # A weekday row must have one cell of the day width for every open weekday.
+            if len(values) < len(active) or any(abs(c['width'] - h['width']) > 100 for c, h in zip(values[:len(active)], active)):
                 continue
-            for header, cell in zip(headers, values):
+            for header, cell in zip(active, values):
                 key = re.sub(r'\s+', '', header['text'])
                 raw = cell['text'].strip()
                 prior = previous.get(label, '')
@@ -133,6 +150,7 @@ def weekly_day_contexts(file_bytes):
                         previous[label] = base + '\n' + addition
                     else:
                         previous[label] = raw
-        if all(len(output[re.sub(r'\s+', '', h['text'])]) >= 8 for h in headers[:5]):
+        # 휴원일은 빈 목록으로 남겨 두어 호출 쪽에서 생성을 건너뛸 수 있게 합니다.
+        if any(output.values()) and all(len(rows) >= 8 for key, rows in output.items() if key not in closed_keys):
             return output
     return {}

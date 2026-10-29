@@ -50,6 +50,19 @@ class WeekTests(unittest.TestCase):
             for name, target in zip(archive.namelist(), NS["weekly_dates"](WEEK)):
                 self.assertIn(NS["day_label"](target), archive.read(name).decode("utf-8"))
 
+    def test_closed_day_in_table_is_skipped(self):
+        generator = Mock(side_effect=lambda *args, **kwargs: {"date_str": NS["day_label"](args[-1])})
+        contexts = {key: [{"area": "a", "original": "", "inherited": ""}] * 8
+                    for key in ("31일(월)", "1일(화)", "3일(목)", "4일(금)")}
+        contexts["2일(수)"] = []
+        with patch.dict(NS, {"analyze_and_generate": generator,
+                             "build_hwp_from_template": lambda *args: b"document"}):
+            files = NS["generate_week_files"]("key", b"", "image/png", WEEK, "", "", Mock(),
+                                               day_contexts=contexts)
+        self.assertEqual(generator.call_count, 4)
+        self.assertEqual([name[:10] for name, _ in files],
+                         ["2026-08-31", "2026-09-01", "2026-09-03", "2026-09-04"])
+
     def test_interrupted_generation_resumes_without_recreating_completed_days(self):
         completed = {}
         generator = Mock(side_effect=[{"date_str": "day1"}, RuntimeError("quota")])

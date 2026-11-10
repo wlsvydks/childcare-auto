@@ -40,9 +40,11 @@ class DocumentTests(unittest.TestCase):
         for tag in ("TABLE", "ROW", "CELL"):
             self.assertEqual(len(list(before.iter(tag))), len(list(after.iter(tag))))
         self.assertNotRegex(result.decode(), r"__[A-Z0-9_]+__")
-        text = list(c.text for c in after.iter("CHAR"))
-        self.assertEqual(text.count("첫 줄 & <내용>"), 37)
-        self.assertEqual(text.count("둘째 줄"), 37)
+        # 날짜 줄은 양식의 앞 공백을 유지하고, 정리정돈 및 손 씻기는 항상 기본 문구라 37개 중 36개가 입력값입니다.
+        text = list(c.text.strip() for c in after.iter("CHAR") if c.text)
+        self.assertEqual(text.count("첫 줄 & <내용>"), 36)
+        self.assertEqual(text.count("둘째 줄"), 36)
+        self.assertIn("  첫 줄 & <내용>", [c.text for c in after.iter("CHAR") if c.text])
 
     def test_missing_template_token_rejected(self):
         with self.assertRaises(ValueError):

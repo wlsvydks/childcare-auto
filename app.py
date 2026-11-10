@@ -163,7 +163,9 @@ def build_hwp_from_template(template_hml_text, day_data):
                 clone = deepcopy(paragraph)
                 for c in clone.iter("CHAR"):
                     if c.text and c.text.strip() == token:
-                        c.text = line
+                        # 양식 글자 앞의 공백(예: '■ 일 시:' 뒤 두 칸)은 첫 줄에 그대로 둡니다.
+                        prefix = c.text[:len(c.text) - len(c.text.lstrip())] if offset == 0 else ""
+                        c.text = prefix + line
                 parent.insert(index + offset, clone)
             parent.remove(paragraph)
     result = ET.tostring(root, encoding="utf-8", xml_declaration=True)
@@ -415,6 +417,9 @@ def fill_routine_plans(day):
     result = dict(day)
     for field, routine in defaults.items():
         value = result.get(field, "").strip()
+        if field == "clean_pm_plan":
+            result[field] = routine
+            continue
         expanded_routine = field != "morning_act_plan" and re.search(
             r"활동\s*(?:목표|자료|방법|명)\s*[:：]?|세부\s*내용\s*[:：]?|"
             r"(?m:^\s*(?:[-*]\s*)?(?:\d+[.)]|T\s*[:：]))", value)
@@ -1281,7 +1286,8 @@ def apply_table_nap_title(day, rows):
             titles = re.findall(r'낮잠(?:음악|동화)\s*\[[^\]]+\]', row['inherited'])
         # Never import a music/story title from a reference daily plan.
         value = re.sub(r'(?m)^\s*[◈◆]?\s*낮잠(?:음악|동화)\s*[:：]?\s*\[[^\]]+\][^\n]*\n?', '', result.get('nap_plan', ''))
-        result['nap_plan'] = '\n'.join(['◈ ' + t for t in titles] + [value.strip()]).strip()
+        mark = cell_mark(row['original']) or cell_mark(row['inherited'])
+        result['nap_plan'] = '\n'.join(['◈ ' + t + (f' ({mark})' if mark else '') for t in titles] + [value.strip()]).strip()
     return result
 
 
@@ -1391,7 +1397,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
     원래의 짧은 일과 안내 문장을 유지하세요. 활동목표·세부내용·활동자료·활동방법,
     번호를 매긴 단계, T: 발화를 붙이지 마세요. 시간을 채우려고 내용을 늘리지 마세요.
     morning_care_plan은 '- 통합보육실에서 조용한 놀이 및 휴식하기' 같은 문구,
-    clean_pm_plan(정리정돈 및 손 씻기)은 '- 손 씻기'만 사용하세요.
+    clean_pm_plan(정리정돈 및 손 씻기)은 '손 씻기'만 사용하세요.
     lunch_clean_plan은 놀잇감 정리와 점심 전 손 씻기 안내만 유지하세요.
     식사·낮잠 등의 기존 여러 안내 문장은 요약하거나 상세 수업 형식으로 바꾸지 마세요.
     낮잠음악 제목은 원문에서 확인되는 경우만 기존 안내 앞에 유지하세요.
@@ -1496,7 +1502,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         if field not in ("morning_act_plan", "lunch_plan", "nap_plan"):
             schema["items"]["properties"][field]["description"] = (
                 "일상생활 안내 문장만 사용. 활동목표·세부내용·활동자료·활동방법·번호 단계·T: 발화 금지."
-                + (" 정확히 '- 손 씻기'로 작성." if field == "clean_pm_plan" else ""))
+                + (" 정확히 '손 씻기'로 작성." if field == "clean_pm_plan" else ""))
     repair_cache = {}
     for attempt in range(3):
         try:

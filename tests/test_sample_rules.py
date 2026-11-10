@@ -328,7 +328,10 @@ class PlanRuleTests(unittest.TestCase):
     def test_nap_title_uses_weekly_cell_instead_of_reference(self):
         rows = weekly_day_contexts(weekly_hml())['7일(금)']
         result = NS['apply_table_nap_title']({'nap_plan': '◈ 낮잠음악 [다른 음악] (ㅇ)\n- 휴식을 돕는다.'}, rows)
-        self.assertIn('낮잠동화 [사이좋게 지내자]', result['nap_plan'])
+        # 수기 문서처럼 제목 뒤에 그날 칸의 실행기호를 붙입니다(금요일 칸 '(ㅇ)').
+        self.assertIn('◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n', result['nap_plan'])
+        thursday = NS['apply_table_nap_title']({'nap_plan': '- 휴식을 돕는다.'}, weekly_day_contexts(weekly_hml())['6일(목)'])
+        self.assertEqual(thursday['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자]\n- 휴식을 돕는다.')
         self.assertNotIn('다른 음악', result['nap_plan'])
         self.assertIn('- 휴식을 돕는다.', result['nap_plan'])
 
@@ -337,7 +340,13 @@ class PlanRuleTests(unittest.TestCase):
         plan = '◈ 낮잠동화 [사이좋게 지내자]\n낮잠동화: [사이좋게 지내자]\n- 휴식을 돕는다.'
         result = NS['apply_table_nap_title']({'nap_plan': plan}, rows)
         self.assertEqual(result['nap_plan'].count('사이좋게 지내자'), 1)
-        self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자]\n- 휴식을 돕는다.')
+        self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 휴식을 돕는다.')
+        self.assertEqual(NS['apply_table_nap_title'](result, rows), result)
+
+    def test_date_line_keeps_the_template_spacing(self):
+        document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'),
+                                                 {'date_str': '2026년 9월 1일 화요일'})
+        self.assertIn('■ 일 시:  2026년 9월 1일 화요일', NS['extract_text_from_hwp_bytes'](document))
 
     def test_table_generation_does_not_copy_other_day_evaluation(self):
         target = date(2026, 8, 6)

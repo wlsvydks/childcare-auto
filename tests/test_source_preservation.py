@@ -19,7 +19,7 @@ class SourcePreservationTests(unittest.TestCase):
                 if line:
                     with self.subTest(field=field, line=line):
                         self.assertIn(line, text)
-        self.assertEqual(defaults['clean_pm_plan'], '- 손 씻기')
+        self.assertEqual(defaults['clean_pm_plan'], '손 씻기')
         self.assertEqual(len(defaults['lunch_clean_plan'].splitlines()), 2)
         self.assertIn('손유희를 하며 식사를 준비한다.', defaults['snack_am_plan'])
         self.assertNotIn('love me', text)
@@ -35,7 +35,7 @@ class SourcePreservationTests(unittest.TestCase):
             (ROOT / 'template.hml').read_text(encoding='utf-8'), day))
         for label in ('활동목표:', '세부내용:', '활동자료:', '활동방법:', '1. 손을'):
             self.assertNotIn(label, text)
-        self.assertIn('- 손 씻기', text)
+        self.assertIn('\n손 씻기\n', text)
         self.assertIn('통합보육실에서 조용한 놀이 및 휴식하기', text)
 
     def test_play_details_and_plain_routines_are_preserved(self):
@@ -54,7 +54,8 @@ class SourcePreservationTests(unittest.TestCase):
         for expanded in ('1. 손을 씻는다.\n2. 닦는다.', '- T: 손을 씻어볼까?',
                          '**활동 목표**: 청결을 유지한다.'):
             self.assertEqual(NS['fill_routine_plans']({'clean_pm_plan': expanded})[
-                'clean_pm_plan'], '- 손 씻기')
+                'clean_pm_plan'], '손 씻기')
+        self.assertEqual(NS['fill_routine_plans']({'clean_pm_plan': '- 손 씻기'})['clean_pm_plan'], '손 씻기')
 
     def test_sparse_plan_gets_routines_without_inventing_evaluation(self):
         day = {'morning_act_plan': '가방 스스로 정리해보기(ㅇ)',

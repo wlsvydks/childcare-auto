@@ -1146,14 +1146,34 @@ def required_activities_from_table(rows):
     return {k: list(dict.fromkeys(v)) for k, v in result.items()}
 
 
-def repair_nap_wake_plan(day, activities, api_key, weekly_text, sample_text, status_box, cache):
-    """점심·낮잠 행의 '+' 안전교육을 기존 낮잠 깨기 안내 뒤에 상세 계획으로 둡니다(그날만, 기호 없음)."""
+def carry_nap_wake_addition(activities, memory):
+    """점심·낮잠 행의 '+' 안전교육은 그 주의 다음 날부터 제목만 적어 이어갑니다.
+
+    실제 11월 문서: 4일(수) 낮잠 깨기 칸에 상세 계획, 5일(목)·6일(금)은 '◈ 활동명: ...' 한 줄만 이어 적었습니다.
+    memory는 주 단위로 유지되는 dict(오후 영역 기억과 같은 것)이며, (activities, 이어지는 제목 목록)을 돌려줍니다.
+    """
+    if memory is None:
+        return activities, []
+    today = list(activities.get('nap_wake_plan', []))
+    names = {activity_name(t) for t in today}
+    carried = [t for t in memory.get('nap_wake_carry', []) if activity_name(t) not in names]
+    memory['nap_wake_carry'] = list(dict.fromkeys(memory.get('nap_wake_carry', []) + today))
+    if carried:
+        activities = dict(activities, nap_wake_plan=today + carried)
+    return activities, carried
+
+
+def repair_nap_wake_plan(day, activities, api_key, weekly_text, sample_text, status_box, cache, continued=None):
+    """점심·낮잠 행의 '+' 안전교육을 기존 낮잠 깨기 안내 뒤에 둡니다(적힌 날은 상세 계획, 이어지는 날은 제목만, 기호 없음)."""
     titles = activities.get('nap_wake_plan')
     if not titles:
         return day
     routine = json.loads(TEMPLATE_PATH.with_name("routine_plans.json").read_text(encoding="utf-8"))['nap_wake_plan']
     plans = []
     for title in titles:
+        if title in (continued or []):
+            plans.append('◈ 활동명: ' + title)
+            continue
         key = ('nap_wake_plan', activity_name(title))
         if key not in cache:
             generated = generate_afternoon_details(api_key, {'nap_wake_plan': [title]}, weekly_text,
@@ -1360,10 +1380,12 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
         evaluation_source = dated_observation_notes(weekly_text, target_date)
         weekly_text = scoped_day_source(weekly_text, target_date, day_context)
         weekly_text += '\n[해당 날짜의 실제 관찰 기록]\n' + evaluation_source
+    nap_continued = []
     if day_context or re.search(r"감각\s*[·∙ㆍ/]?\s*탐색|오\s*전\s*실\s*내\s*(?:놀\s*이|자유)|신\s*체|언\s*어", weekly_text):
         status_box.info(f"{target_label} · 주안의 영역별 활동을 확인하고 있어요.")
         if day_context:
             activities = required_activities_from_table(day_context)
+            activities, nap_continued = carry_nap_wake_addition(activities, slot_memory)
             afternoon = extract_afternoon_activities(api_key, weekly_text, target_label, status_box)
             if afternoon is None:
                 raise ValueError('주안 표의 오후 실내놀이를 확인하지 못했습니다.')
@@ -1564,7 +1586,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
                 days[0] = repair_morning_plans(days[0], activities, continued, api_key,
                                               weekly_text, sample_daily_text, status_box, repair_cache)
                 days[0] = repair_nap_wake_plan(days[0], activities, api_key, weekly_text,
-                                               sample_daily_text, status_box, repair_cache)
+                                               sample_daily_text, status_box, repair_cache, nap_continued)
                 validate_activity_coverage(days[0], activities, continued)
                 validate_evaluation_sources(days[0], evaluation_source)
                 validate_focus_activities(days[0], weekly_text)
@@ -1594,7 +1616,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-11-10-r26")
+st.caption("앱 버전: 2026-11-10-r27")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

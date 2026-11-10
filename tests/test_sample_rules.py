@@ -269,6 +269,18 @@ class PlanRuleTests(unittest.TestCase):
         self.assertIn('◈ 활동명: ' + title, result['nap_wake_plan'])
         self.assertIn('T: 바지를 입어볼까?', result['nap_wake_plan'])
         self.assertEqual(request.call_count, 1)
+        # 실제 11월 5·6일 문서: 다음 날부터는 같은 칸에 '◈ 활동명: ...' 제목 한 줄만 이어 적었습니다.
+        memory = {}
+        first, carried = NS['carry_nap_wake_addition'](activities, memory)
+        self.assertEqual((first, carried), (activities, []))
+        later, carried = NS['carry_nap_wake_addition']({'body_plan': ['x']}, memory)
+        self.assertEqual((later['nap_wake_plan'], carried), ([title], [title]))
+        with patch.dict(NS, {'generate_with_fallback': request}):
+            titled = NS['repair_nap_wake_plan']({}, later, 'key', '', '', Mock(), {}, carried)
+        self.assertTrue(titled['nap_wake_plan'].endswith('\n\n◈ 활동명: ' + title))
+        self.assertNotIn('활동목표', titled['nap_wake_plan'])
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(NS['carry_nap_wake_addition']({'body_plan': ['x']}, None), ({'body_plan': ['x']}, []))
         # 저장 단계의 일상생활 보정과 최종 문서에서도 유지됩니다.
         self.assertEqual(NS['fill_routine_plans'](result)['nap_wake_plan'], result['nap_wake_plan'])
         document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'), result)

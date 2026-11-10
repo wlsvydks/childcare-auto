@@ -308,6 +308,27 @@ class PlanRuleTests(unittest.TestCase):
         two = NS['indent_plan_lines']('- 세부내용: 가\n  나\n  다\n- 활동자료: 없음')
         self.assertEqual(two, '- 세부내용: 가\n' + ' ' * 11 + '나\n' + ' ' * 11 + '다\n- 활동자료: 없음')
 
+    def test_marks_missing_the_opening_bracket_are_still_marks(self):
+        # 실제 9월 4주 주안 오타 '자동차 막대 인형으로 놀이해요ㅇ)'가 결과에 '놀이해요ㅇ) (ㅇ)'로 찍혔습니다.
+        self.assertEqual(NS['titles_from_cell']('자동차 막대 인형으로 놀이해요ㅇ)'), ['자동차 막대 인형으로 놀이해요'])
+        self.assertEqual(NS['activity_name']('◈ 활동명: 자동차 막대 인형으로 놀이해요ㅇ)'), '자동차막대인형으로놀이해요')
+        self.assertEqual(NS['cell_mark']('자동차 막대 인형으로 놀이해요ㅇ)'), 'ㅇ')
+        self.assertEqual(NS['cell_mark']('비닐 풍선을 잡아보아요×)'), 'x')
+        self.assertEqual(NS['add_marks']('◈ 활동명: 자동차 막대 인형으로 놀이해요ㅇ)', 'ㅇ', {}),
+                         '◈ 활동명: 자동차 막대 인형으로 놀이해요 (ㅇ)')
+
+    def test_clearly_physical_afternoon_activity_goes_to_the_body_slot(self):
+        # 실제 9월 4주: 교통안전교육 '횡단보도 걸어보기'는 [신체]에 적혔습니다. 그림책·화보 보기는 그대로 [언어]입니다.
+        afternoon = {'pm_cell_1': [], 'pm_cell_2': ['교통안전교육 : [건너가는 길] 노래 들으며 횡단보도 걸어보기'],
+                     'pm_cell_3': [], 'pm_cell_4': ['한복을 입어요(사전)']}
+        result = NS['reassign_afternoon_slots'](afternoon)
+        self.assertEqual(result['pm_cell_1'], ['교통안전교육 : [건너가는 길] 노래 들으며 횡단보도 걸어보기'])
+        self.assertEqual(result['pm_cell_2'], [])
+        self.assertEqual(result['pm_cell_4'], ['한복을 입어요(사전)'])
+        kept = {'pm_cell_1': [], 'pm_cell_2': ['인터넷중독 예방 및 해소 관련 교육 [꼭! 꼭! 약속해요] 화보보기'],
+                'pm_cell_3': [], 'pm_cell_4': []}
+        self.assertEqual(NS['reassign_afternoon_slots'](kept), kept)
+
     def test_afternoon_activity_keeps_its_first_slot_across_days(self):
         memory = {}
         monday = NS['stabilize_afternoon_slots'](

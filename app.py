@@ -647,8 +647,10 @@ def extract_afternoon_activities(api_key, weekly_text, target_label, status_box)
     source_cell에는 대상 요일에 적용되는 오후 실내 칸의 활동 원문 전체를 옮기세요.
     화살표는 같은 오후 행 앞 요일의 활동을 이어받으세요. 오전 활동으로 바꾸지 마세요.
     + 앞뒤의 활동은 모두 포함하세요. 교통안전교육 + 한복 입기라면 두 활동 모두입니다.
-    pm_cell_1 신체, pm_cell_2 언어/안전교육, pm_cell_3 감각탐색, pm_cell_4 역할쌓기에
+    pm_cell_1 신체, pm_cell_2 언어, pm_cell_3 감각탐색, pm_cell_4 역할쌓기에
     각 활동의 원문 이름을 배열로 넣으세요. 활동명은 원문을 줄이거나 고치지 마세요.
+    영역은 활동 내용으로 정하세요. 그림책·화보 보기는 언어, 체조·징검다리·횡단보도 걷기처럼
+    몸을 움직이는 활동은 신체입니다. '교육'이라는 이름만으로 언어에 넣지 마세요.
     repeats_morning은 해당 칸에 오전 반복이라고 명시되어 있거나 빈 행일 때만 true입니다.
     오후에 활동이 적혀 있으면 기본 활동도 추가 활동도 모두 false로 분류하고 추출하세요.
     """
@@ -775,7 +777,7 @@ def extract_continued_activities(api_key, weekly_text, target_date, status_box):
 
 def activity_name(value):
     value = re.sub(r'^\s*[◈◆]?\s*활동명\s*[:：]\s*', '', value)
-    value = re.sub(r'\s*\([ㅇoOxX○×]\)\s*$', '', value)
+    value = re.sub(r'\s*(?:\(\s*[ㅇoOxX○×]\s*\)|[ㅇ○×]\))\s*$', '', value)
     return re.sub(r'\s+', '', value)
 
 
@@ -989,7 +991,8 @@ def scoped_day_source(weekly_text, target_date, rows):
 
 
 def titles_from_cell(value):
-    value = re.sub(r'\([ㅇoOxX○×]\)|[→←↔]', '', value)
+    # 주안 오타 '놀이해요ㅇ)'처럼 여는 괄호가 빠진 기호도 지웁니다(실제 9월 4주 21일 언어 칸).
+    value = re.sub(r'\(\s*[ㅇoOxX○×]\s*\)|[ㅇ○×]\)|[→←↔]', '', value)
     return [' '.join(p.split()) for p in re.split(r'\(\+\)|\+', value) if p.strip()]
 
 
@@ -1036,6 +1039,22 @@ def apply_table_additions(day, rows):
         existing = result.get(field, '').strip()
         lines = ['+ ' + title for title in titles if '+ ' + title not in existing]
         result[field] = '\n'.join(lines + ([existing] if existing else []))
+    return result
+
+
+def reassign_afternoon_slots(afternoon):
+    """몸을 움직이는 것이 분명한 오후 활동은 AI가 다른 영역에 넣었어도 [신체] 칸에 둡니다.
+
+    실제 9월 4주 문서: '교통안전교육 : [건너가는 길] 노래 들으며 횡단보도 걸어보기'는 [신체]에 적혔는데
+    앱은 '안전교육'이라는 이름 때문에 [언어]에 넣었습니다. 선생님은 교육 이름이 아니라 활동 내용으로 영역을 정했습니다.
+    """
+    if not afternoon or 'pm_cell_1' not in afternoon:
+        return afternoon
+    physical = re.compile(r'체조|징검다리|횡단보도|건너(?:요|기|보)|걸어\s*(?:보|요|가)|뛰어|점프|달리기')
+    result = {field: [] for field in afternoon}
+    for field, titles in afternoon.items():
+        for title in titles:
+            result['pm_cell_1' if physical.search(title) else field].append(title)
     return result
 
 
@@ -1173,7 +1192,7 @@ def validate_table_focus(day, rows):
 
 def cell_mark(text):
     """칸에 적힌 마지막 실행기호를 (ㅇ)/(x) 두 가지로 정리합니다. 없으면 빈 문자열."""
-    marks = re.findall(r'\(\s*([ㅇoOxX○×])\s*\)', text)
+    marks = [a or b for a, b in re.findall(r'\(\s*([ㅇoOxX○×])\s*\)|([ㅇ○×])\)', text)]
     if not marks:
         return ''
     return 'x' if marks[-1] in 'xX×' else 'ㅇ'
@@ -1204,7 +1223,7 @@ def add_marks(value, main, plus, repeated=None, repeated_marks=None):
             else:
                 mark = plus.get(name) or main
             if mark:
-                title = re.sub(r'\s*\(\s*[ㅇoOxX○×]\s*\)\s*$', '', heading[2])
+                title = re.sub(r'\s*(?:\(\s*[ㅇoOxX○×]\s*\)|[ㅇ○×]\))\s*$', '', heading[2])
                 line = f"{heading[1]}{title} ({mark})"
         lines.append(line)
     # 줄 끝의 개행을 보존해 뒤에 이어지는 '[미세먼지 · 우천시 대체활동]' 제목이 붙지 않게 합니다.
@@ -1323,7 +1342,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
             afternoon = extract_afternoon_activities(api_key, weekly_text, target_label, status_box)
             if afternoon is None:
                 raise ValueError('주안 표의 오후 실내놀이를 확인하지 못했습니다.')
-            activities.update(stabilize_afternoon_slots(afternoon, slot_memory))
+            activities.update(stabilize_afternoon_slots(reassign_afternoon_slots(afternoon), slot_memory))
         else:
             activities = extract_day_activities(api_key, weekly_text, target_label, status_box)
         if day_context:
@@ -1549,7 +1568,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-11-10-r24")
+st.caption("앱 버전: 2026-11-10-r25")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

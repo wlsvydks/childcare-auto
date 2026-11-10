@@ -71,11 +71,38 @@ class TableTests(unittest.TestCase):
     def test_table_morning_and_title_only_rules(self):
         rows = self.contexts['6일(목)']
         activities = NS['morning_activities_from_table'](rows)
-        self.assertEqual(activities['sense_plan'], ['관절 인형', '다양한 표정 퍼즐'])
+        # 실제 문서: 오전 칸의 '(+) 추가 놀이'는 계획란에 없고 평가란에 '+ 제목'으로만 적힙니다.
+        self.assertEqual(activities['sense_plan'], ['관절 인형'])
         brief = NS['table_title_only'](rows, activities)
         self.assertEqual(brief['body_plan'], ['동작 화보'])
-        self.assertEqual(brief['sense_plan'], ['다양한 표정 퍼즐'])
-        self.assertNotIn('관절 인형', brief['sense_plan'])
+        self.assertNotIn('sense_plan', brief)
+        self.assertEqual(NS['table_additions'](rows), {'sense_eval': ['다양한 표정 퍼즐']})
+        day = NS['apply_table_additions']({'sense_plan': plan('관절 인형'), 'sense_eval': ''}, rows)
+        self.assertEqual(day['sense_eval'], '+ 다양한 표정 퍼즐')
+        prompted = NS['add_evaluation_prompts'](day)
+        self.assertTrue(prompted['sense_eval'].startswith('+ 다양한 표정 퍼즐\n[실행·평가 기록 전]'))
+        self.assertEqual(NS['add_evaluation_prompts'](prompted), prompted)
+        self.assertEqual(NS['apply_table_additions'](prompted, rows), prompted)
+        recorded = NS['apply_table_additions']({'sense_eval': '실제 기록'}, rows)
+        self.assertEqual(recorded['sense_eval'], '+ 다양한 표정 퍼즐\n실제 기록')
+
+    def test_plus_only_cell_continues_previous_activity(self):
+        # 실제 10월 주안: 금요일 신체 칸이 '+ [비만 예방 정글체조] ...'뿐이면 전날 활동이 제목으로 이어집니다.
+        data = weekly_hml().decode('utf-8').replace('풍선 놀이', '+ 정글체조 따라하기')
+        rows = weekly_day_contexts(data.encode('utf-8'))['7일(금)']
+        self.assertEqual(rows[2]['inherited'], '동작 화보')
+        activities = NS['required_activities_from_table'](rows)
+        self.assertEqual(activities['body_plan'], ['동작 화보'])
+        self.assertEqual(NS['table_title_only'](rows, activities)['body_plan'], ['동작 화보'])
+        self.assertEqual(NS['table_additions'](rows)['body_eval'], ['정글체조 따라하기'])
+        source = NS['scoped_day_source']('■ 실시기간: 2026년 8월 3일 ~ 8월 8일\n날       짜', date(2026, 8, 7), rows)
+        self.assertIn('계획란에 쓰지 않음', source)
+
+    def test_plus_without_any_base_becomes_the_main_activity(self):
+        data = weekly_hml().decode('utf-8').replace('체조해요', '+ 첫날 추가 놀이')
+        rows = weekly_day_contexts(data.encode('utf-8'))['3일(월)']
+        self.assertEqual(NS['required_activities_from_table'](rows)['body_plan'], ['첫날 추가 놀이'])
+        self.assertNotIn('body_eval', NS['table_additions'](rows))
 
     def test_other_day_and_weekly_evaluation_not_in_day_source(self):
         source = NS['scoped_day_source']('■ 실시기간: 2026년 8월 3일 ~ 8월 8일\n주간 총 평가\n다른 기록',
@@ -180,12 +207,13 @@ class PlanRuleTests(unittest.TestCase):
                'pm_cell_4': '[역할·쌓기]\n◈ 활동명: 병원 놀이',
                'safety_check': '물기 닦기'}
         result = NS['apply_table_marks'](day, rows)
-        self.assertEqual(result['body_plan'].splitlines()[0], '◈ 활동명: 징검다리')
+        # 실제 문서: 기호가 없는 놀이 칸(징검다리)도 (ㅇ), + 추가 활동(손 지문)은 기본 활동의 기호를 따릅니다.
+        self.assertEqual(result['body_plan'].splitlines()[0], '◈ 활동명: 징검다리 (ㅇ)')
         self.assertEqual(result['role_plan'], '◈ 활동명: 병원 놀이 (ㅇ)')
         self.assertIn('◈ 활동명: 공 놀이 (x)', result['outdoor_am_plan'])
         self.assertIn('◈ 활동명: 볼링 (ㅇ)', result['outdoor_am_plan'])
         self.assertIn('◈ 활동명: 안전 그림책 (ㅇ)', result['pm_cell_2'])
-        self.assertIn('◈ 활동명: 손 지문\n', result['pm_cell_2'])
+        self.assertIn('◈ 활동명: 손 지문 (ㅇ)\n', result['pm_cell_2'])
         self.assertEqual(result['pm_cell_4'], '[역할·쌓기]\n◈ 활동명: 병원 놀이 (ㅇ)')
         self.assertEqual(result['safety_check'], '물기 닦기')
         self.assertIn('던진다.\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (ㅇ)', result['outdoor_am_plan'])
@@ -198,12 +226,92 @@ class PlanRuleTests(unittest.TestCase):
                'outdoor_am_plan': '◈ 활동명: 공 놀이\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링',
                'safety_check': '◈ 물기 닦기(ㅇ)\n- 청결점검'}
         result = NS['apply_table_marks'](day, rows)
-        # 그날 칸에 기호가 있으면 ' (ㅇ)' 형식으로 정리하고, 기호가 없는 칸의 활동은 손대지 않습니다.
+        # 그날 칸에 기호가 있으면 ' (ㅇ)' 형식으로 정리하고, 기호가 없는 놀이 칸도 실제 문서처럼 (ㅇ)로 적습니다.
         self.assertEqual(result['morning_act_plan'], '- 등원 인사\n◈ 활동명: 친구와 인사해요 (ㅇ)')
-        self.assertEqual(result['role_plan'], day['role_plan'])
+        self.assertEqual(result['role_plan'], '◈ 활동명: 벽돌 블록 (ㅇ)\n- 활동목표: 쌓는다.')
         self.assertEqual(result['outdoor_am_plan'],
                          '◈ 활동명: 공 놀이 (x)\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (ㅇ)')
         self.assertEqual(result['safety_check'], '물기 닦기 (ㅇ)\n청결점검 (ㅇ)')
+
+    def test_alternative_activity_mark_is_opposite_of_outdoor_mark(self):
+        # 실제 문서 24일치: 실외 (ㅇ)이면 대체 (x), 실외 (x)이면 대체 (ㅇ). 주안 대체 칸의 (ㅇ) 반복 기호보다 우선합니다.
+        contexts = weekly_day_contexts(weekly_hml())
+        day = {'outdoor_am_plan': '◈ 활동명: 공 놀이\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링'}
+        monday = NS['apply_table_marks'](day, contexts['3일(월)'])
+        self.assertEqual(monday['outdoor_am_plan'],
+                         '◈ 활동명: 공 놀이 (ㅇ)\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (x)')
+        tuesday = NS['apply_table_marks'](day, contexts['4일(화)'])
+        self.assertEqual(tuesday['outdoor_am_plan'],
+                         '◈ 활동명: 공 놀이 (x)\n[미세먼지 · 우천시 대체활동]\n◈ 활동명: 볼링 (ㅇ)')
+
+    def test_nap_row_has_no_evaluation_prompt_but_daily_does(self):
+        result = NS['add_evaluation_prompts']({'nap_plan': '◈ 낮잠음악 [love me]\n- 돕는다.', 'nap_eval': '',
+                                               'body_plan': '◈ 활동명: 공 놀이', 'body_eval': ''})
+        self.assertEqual(result['nap_eval'], '')
+        self.assertIn('[실행·평가 기록 전]', result['body_eval'])
+        self.assertIn('[일과평가 기록 전]', result['daily_eval'])
+
+    def test_lunch_row_plus_safety_education_goes_under_nap_wake_routine(self):
+        # 실제 11월 주안: 점심·낮잠 칸 '+ [성폭력 예방교육] 배변 후 ...' → 낮잠 깨기 및 기저귀 갈기 일과 아래 상세 계획.
+        title = '[성폭력 예방교육] 배변 후 도움받아 바지 입어보기'
+        data = weekly_hml().decode('utf-8').replace('(ㅇ)\n+놀잇감을 정리해요(중점)', '(ㅇ)\n+ ' + title)
+        rows = weekly_day_contexts(data.encode('utf-8'))['5일(수)']
+        activities = NS['required_activities_from_table'](rows)
+        self.assertEqual(activities['nap_wake_plan'], [title])
+        self.assertNotIn('lunch_plan', activities)
+        response = {'goals': ['바지를 입어 본다.', '도움을 받아 시도한다.'], 'curriculum_ids': ['C001'], 'materials': [],
+                    'steps': [{'action': '바지를 살펴본다.', 'speech': ['바지를 입어볼까?']},
+                              {'action': '한쪽씩 다리를 넣어본다.', 'speech': ['선생님이 도와줄게.']}]}
+        request = Mock(return_value=response)
+        with patch.dict(NS, {'generate_with_fallback': request}):
+            result = NS['repair_nap_wake_plan']({}, activities, 'key', '', '', Mock(), {})
+        self.assertTrue(result['nap_wake_plan'].startswith('- 낮잠을 깬 영아의 기저귀를 확인하고 갈아준다.'))
+        self.assertIn('◈ 활동명: ' + title, result['nap_wake_plan'])
+        self.assertIn('T: 바지를 입어볼까?', result['nap_wake_plan'])
+        self.assertEqual(request.call_count, 1)
+        # 저장 단계의 일상생활 보정과 최종 문서에서도 유지됩니다.
+        self.assertEqual(NS['fill_routine_plans'](result)['nap_wake_plan'], result['nap_wake_plan'])
+        document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'), result)
+        self.assertIn(title, NS['extract_text_from_hwp_bytes'](document))
+        # AI가 일상생활 칸에 임의로 쓴 활동은 여전히 기본 안내로 되돌립니다.
+        self.assertNotIn('활동명', NS['fill_routine_plans']({'nap_wake_plan': plan('임의 활동')})['nap_wake_plan'])
+
+    def test_empty_safety_cell_is_filled_from_the_table_and_marked(self):
+        contexts = weekly_day_contexts(weekly_hml())
+        # 화요일 칸은 기호가 없어 그대로, 수요일은 '(ㅇ)' 반복 기호를 이어받아 기호가 붙습니다.
+        tuesday = NS['apply_table_marks'](NS['apply_table_safety']({'safety_check': ''}, contexts['4일(화)']), contexts['4일(화)'])
+        self.assertEqual(tuesday['safety_check'], '물기 닦기')
+        wednesday = NS['apply_table_marks'](NS['apply_table_safety']({'safety_check': ''}, contexts['5일(수)']), contexts['5일(수)'])
+        self.assertEqual(wednesday['safety_check'], '물기 닦기 (ㅇ)')
+        kept = NS['apply_table_safety']({'safety_check': '청결점검'}, contexts['5일(수)'])
+        self.assertEqual(kept['safety_check'], '청결점검')
+
+    def test_plan_lines_are_indented_like_the_edited_documents(self):
+        # 10·11월 편집본 측정값: 목표·세부내용 둘째 줄 공백 11칸(44+36건), '1.' 1칸(98건), 'T:' 2칸(236건), 나머지 0칸.
+        value = ('- 등원 안내\n\n◈ 활동명: 공 굴리기 (ㅇ)\n- 활동목표: 공을 탐색한다.\n  친구와 굴린다.\n'
+                 '- 세부내용: C001\n- 활동자료: 공\n- 활동방법\n1. 공을 살펴본다.\nT: 무엇이 보이니?\n'
+                 '[미세먼지 · 우천시 대체활동]\n◈ 활동명: 실내 공놀이')
+        result = NS['finalize_activity_plans']({'outdoor_am_plan': value})['outdoor_am_plan']
+        lines = result.splitlines()
+        self.assertEqual(lines[0], '- 등원 안내')
+        self.assertEqual(lines[4], ' ' * 11 + '친구와 굴린다.')
+        self.assertTrue(lines[5].startswith('- 세부내용: 신체운동'))
+        self.assertEqual(lines[8], ' 1. 공을 살펴본다.')
+        self.assertEqual(lines[9], '  T: 무엇이 보이니?')
+        self.assertEqual(lines[10], '[미세먼지 · 우천시 대체활동]')
+        self.assertEqual(NS['finalize_activity_plans']({'outdoor_am_plan': result})['outdoor_am_plan'], result)
+        two = NS['indent_plan_lines']('- 세부내용: 가\n  나\n  다\n- 활동자료: 없음')
+        self.assertEqual(two, '- 세부내용: 가\n' + ' ' * 11 + '나\n' + ' ' * 11 + '다\n- 활동자료: 없음')
+
+    def test_afternoon_activity_keeps_its_first_slot_across_days(self):
+        memory = {}
+        monday = NS['stabilize_afternoon_slots'](
+            {'pm_cell_1': [], 'pm_cell_2': ['안전 그림책'], 'pm_cell_3': [], 'pm_cell_4': []}, memory)
+        self.assertEqual(monday['pm_cell_2'], ['안전 그림책'])
+        tuesday = NS['stabilize_afternoon_slots'](
+            {'pm_cell_1': ['안전 그림책'], 'pm_cell_2': [], 'pm_cell_3': ['손 지문'], 'pm_cell_4': []}, memory)
+        self.assertEqual(tuesday, {'pm_cell_1': [], 'pm_cell_2': ['안전 그림책'], 'pm_cell_3': ['손 지문'], 'pm_cell_4': []})
+        self.assertEqual(NS['stabilize_afternoon_slots'](tuesday, None), tuesday)
 
     def test_goal_lines_are_joined_to_label_without_bullets(self):
         value = '◈ 활동명: X\n- 활동목표:\n· 하나를 한다.\n· 둘을 경험한다.\n- 세부내용: C001\n- 활동자료: 없음'

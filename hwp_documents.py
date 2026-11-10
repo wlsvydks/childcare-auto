@@ -137,7 +137,9 @@ def weekly_day_contexts(file_bytes):
                 raw = cell['text'].strip()
                 prior = previous.get(label, '')
                 marker_only = not re.sub(r'\([ㅇoOxX○×]\)|[→←↔─ㅡ\s-]', '', raw)
-                starts_repeat = bool(re.match(r'^\s*(?:\([ㅇoOxX○×]\)|[→←↔])', raw))
+                # 실행기호·화살표로 시작하거나 '+ 추가 놀이'만 적힌 칸은 앞날의 기본 활동을 이어받습니다.
+                # (실제 주안: 금요일 신체 칸이 '+ [비만 예방 정글체조] ...'뿐이어도 전날 활동이 계속됨)
+                starts_repeat = bool(re.match(r'^\s*(?:\([ㅇoOxX○×]\)|[→←↔]|\(\+\)|\+)', raw))
                 inherited = prior if marker_only or starts_repeat else ''
                 if starts_repeat and not marker_only:
                     inherited = re.split(r'\(\+\)|\+', inherited, maxsplit=1)[0].strip()

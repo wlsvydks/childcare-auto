@@ -153,6 +153,27 @@ class ProjectRequestTests(unittest.TestCase):
         client.close.assert_called_once()
         client.models.generate_content.assert_not_called()
 
+    def test_transient_model_list_outage_is_retried_then_succeeds(self):
+        client = Mock()
+        client.models.list.side_effect = [errors.ServerError(503, {}), errors.ServerError(502, {}), [SimpleNamespace(
+            name="models/gemini-test-flash", supported_actions=["generateContent"])]]
+        with patch.dict(NS, {"setting": lambda *args: ""}), patch("time.sleep") as sleep:
+            self.assertEqual(NS["get_available_models"](client), ["gemini-test-flash"])
+        self.assertEqual(client.models.list.call_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 4])
+
+    def test_persistent_model_list_outage_stops_with_server_message(self):
+        client = Mock()
+        client.models.list.side_effect = errors.ServerError(503, {})
+        with patch.dict(NS, {"setting": lambda *args: ""}), patch("time.sleep"):
+            with self.assertRaises(errors.ServerError):
+                NS["get_available_models"](client)
+        self.assertEqual(client.models.list.call_count, 3)
+        with patch.dict(NS, {"setting": lambda name, default="": "",
+                             "generate_with_key": Mock(side_effect=errors.ServerError(503, {}))}):
+            with self.assertRaisesRegex(RuntimeError, "일시적으로 응답하지 못했어요.*503"):
+                NS["generate_with_fallback"]("paid-key", ["document"], {}, Mock())
+
     def test_free_model_setting_is_independent_and_result_validated(self):
         client = Mock()
         client.models.generate_content.return_value = SimpleNamespace(text='[{"ok": true}]')

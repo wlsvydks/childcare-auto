@@ -285,6 +285,11 @@ class PlanRuleTests(unittest.TestCase):
         self.assertEqual(wednesday['safety_check'], '물기 닦기 (ㅇ)')
         kept = NS['apply_table_safety']({'safety_check': '청결점검'}, contexts['5일(수)'])
         self.assertEqual(kept['safety_check'], '청결점검')
+        # AI가 행 이름을 내용처럼 적은 줄은 지우고, 그래서 비게 되면 표에서 채웁니다.
+        labelled = NS['apply_table_safety']({'safety_check': '기본생활 및 안전\n친구에게 인사하기'}, contexts['5일(수)'])
+        self.assertEqual(labelled['safety_check'], '친구에게 인사하기')
+        only_label = NS['apply_table_safety']({'safety_check': '- 기본생활 및 안전:'}, contexts['5일(수)'])
+        self.assertEqual(only_label['safety_check'], '물기 닦기')
 
     def test_plan_lines_are_indented_like_the_edited_documents(self):
         # 10·11월 편집본 측정값: 목표·세부내용 둘째 줄 공백 11칸(44+36건), '1.' 1칸(98건), 'T:' 2칸(236건), 나머지 0칸.

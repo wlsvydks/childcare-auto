@@ -251,7 +251,19 @@ def get_available_models(client, model_setting="GEMINI_MODEL"):
     if configured:
         return [configured]
     names = []
-    for model in client.models.list():
+    # 2026-11-10 실제 배포에서 모델 목록 조회가 Google 쪽 일시 장애(HTTP 503)로 한 번에 중단됐습니다.
+    # 5xx는 잠시 뒤 재시도하면 대부분 정상이므로 최대 3회(2초·4초 간격) 시도합니다. 429는 그대로 올립니다.
+    for attempt in range(3):
+        try:
+            models = list(client.models.list())
+            break
+        except Exception as exc:
+            if attempt < 2 and api_error_code(exc) in (500, 502, 503, 504):
+                import time
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise
+    for model in models:
         name = (model.name or "").removeprefix("models/")
         actions = getattr(model, "supported_actions", None) or []
         if ("gemini" in name and "flash" in name
@@ -385,6 +397,10 @@ def generate_with_fallback(api_key, contents, schema, status_box):
             if code == 504:
                 raise RuntimeError("Google AI 응답 시간이 초과됐습니다(HTTP 504). 잠시 후 다시 시도해 주세요. "
                                    "반복되면 입력 문서 분량을 줄이거나 GEMINI_MODEL 설정을 확인해 주세요.\n"
+                                   + diagnostic) from None
+            if code in (500, 502, 503):
+                raise RuntimeError(f"Google AI 서버가 일시적으로 응답하지 못했어요(HTTP {code}). 앱이나 주안의 문제가 아닙니다. "
+                                   "잠시 후 '날짜별 계획안 모두 만들기'를 다시 누르면 완료한 날짜 다음부터 이어서 생성합니다.\n"
                                    + diagnostic) from None
             if code:
                 raise RuntimeError("AI 요청에 실패했어요. 아래 모델과 오류 코드를 확인해 주세요.\n" + diagnostic) from None
@@ -1103,7 +1119,11 @@ def repair_nap_wake_plan(day, activities, api_key, weekly_text, sample_text, sta
 def apply_table_safety(day, rows):
     """기본생활 및 안전 칸이 비면 주안 표의 그날 칸(이어지는 항목 포함)으로 채웁니다. 기호는 apply_table_marks가 붙입니다."""
     result = dict(day)
-    if result.get('safety_check', '').strip():
+    # 실제 r24 결과(9월 4일)에서 AI가 행 이름 '기본생활 및 안전'을 내용처럼 적어 '(ㅇ)'까지 붙은 적이 있어 그 줄은 지웁니다.
+    result['safety_check'] = '\n'.join(
+        line for line in result.get('safety_check', '').splitlines()
+        if re.sub(r'[\s◈◆\-·•:：]', '', line) not in ('', '기본생활및안전', '기본생활', '안전'))
+    if result['safety_check'].strip():
         return result
     for row in rows:
         if row['area'] == '기본생활및안전':

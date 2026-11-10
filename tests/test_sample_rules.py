@@ -290,6 +290,9 @@ class PlanRuleTests(unittest.TestCase):
         self.assertEqual(labelled['safety_check'], '친구에게 인사하기')
         only_label = NS['apply_table_safety']({'safety_check': '- 기본생활 및 안전:'}, contexts['5일(수)'])
         self.assertEqual(only_label['safety_check'], '물기 닦기')
+        # 실제 10월 14일 결과: AI가 '활동명: 스스로 로션짜서 발라보기'처럼 머리말을 붙였습니다.
+        headed = NS['apply_table_safety']({'safety_check': '◈ 활동명: 스스로 로션짜서 발라보기'}, contexts['5일(수)'])
+        self.assertEqual(headed['safety_check'], '스스로 로션짜서 발라보기')
 
     def test_plan_lines_are_indented_like_the_edited_documents(self):
         # 10·11월 편집본 측정값: 목표·세부내용 둘째 줄 공백 11칸(44+36건), '1.' 1칸(98건), 'T:' 2칸(236건), 나머지 0칸.
@@ -316,6 +319,20 @@ class PlanRuleTests(unittest.TestCase):
         self.assertEqual(NS['cell_mark']('비닐 풍선을 잡아보아요×)'), 'x')
         self.assertEqual(NS['add_marks']('◈ 활동명: 자동차 막대 인형으로 놀이해요ㅇ)', 'ㅇ', {}),
                          '◈ 활동명: 자동차 막대 인형으로 놀이해요 (ㅇ)')
+
+    def test_afternoon_titles_snap_to_the_weekly_cell_text(self):
+        # 실제 10월 14일 결과: AI가 '[장애인식 개선교육]:...' 앞의 '['를 빼고 돌려줘 새 활동으로 취급됐습니다.
+        rows = [{'area': '오후활동 실내', 'original': '(ㅇ)\n+ 동물 징검다리 건너보기',
+                 'inherited': '[장애인식 개선교육]:우리 모두 친구가 될 수 있어요] 그림책 보기(ㅇ)'}]
+        afternoon = {'pm_cell_1': ['동물 징검다리  건너보기'], 'pm_cell_2': ['장애인식 개선교육]:우리 모두 친구가 될 수 있어요] 그림책 보기'],
+                     'pm_cell_3': [], 'pm_cell_4': []}
+        result = NS['snap_afternoon_titles'](afternoon, rows)
+        self.assertEqual(result['pm_cell_2'], ['[장애인식 개선교육]:우리 모두 친구가 될 수 있어요] 그림책 보기'])
+        self.assertEqual(result['pm_cell_1'], ['동물 징검다리 건너보기'])
+        self.assertEqual(NS['table_title_only'](rows, result)['pm_cell_2'], result['pm_cell_2'])
+        unknown = {'pm_cell_1': [], 'pm_cell_2': ['전혀 다른 활동'], 'pm_cell_3': [], 'pm_cell_4': []}
+        self.assertEqual(NS['snap_afternoon_titles'](unknown, rows), unknown)
+        self.assertEqual(NS['snap_afternoon_titles'](afternoon, []), afternoon)
 
     def test_clearly_physical_afternoon_activity_goes_to_the_body_slot(self):
         # 실제 9월 4주: 교통안전교육 '횡단보도 걸어보기'는 [신체]에 적혔습니다. 그림책·화보 보기는 그대로 [언어]입니다.
@@ -367,6 +384,9 @@ class PlanRuleTests(unittest.TestCase):
         bracketed = '◈ 낮잠동화 [사이좋게 지내자]\n[낮잠동화] 사이좋게 지내자\n- 휴식을 돕는다.\n- 낮잠 잘 준비를 하고 낮잠 동화를 듣는다.'
         result = NS['apply_table_nap_title']({'nap_plan': bracketed}, rows)
         self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 휴식을 돕는다.\n- 낮잠 잘 준비를 하고 낮잠 동화를 듣는다.')
+        # 실제 10월 15일 결과: '- 낮잠동화 [사이좋게 지내자]' 줄이 제목 아래 한 번 더 있었습니다.
+        dashed = NS['apply_table_nap_title']({'nap_plan': '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 낮잠동화 [사이좋게 지내자]\n- 휴식을 돕는다.'}, rows)
+        self.assertEqual(dashed['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 휴식을 돕는다.')
 
     def test_date_line_keeps_the_template_spacing(self):
         document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'),

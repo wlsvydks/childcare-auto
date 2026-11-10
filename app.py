@@ -1042,6 +1042,30 @@ def apply_table_additions(day, rows):
     return result
 
 
+def snap_afternoon_titles(afternoon, rows):
+    """AI가 추출한 오후 활동명을 주안 칸에 적힌 글자 그대로로 되돌립니다.
+
+    실제 10월 14일 결과: AI가 '[장애인식 개선교육]:우리 모두 ...' 앞의 '['를 빼고 돌려줘 이어지는 활동으로 인식되지 않았고,
+    제목만 적어야 할 칸에 상세 계획이 다시 생겼습니다. 주안 제목과 같거나 한쪽이 다른 쪽을 포함하면 주안 제목으로 바꿉니다.
+    """
+    table = []
+    for row in rows or []:
+        if row['area'] == '오후활동 실내':
+            table = titles_from_cell(row['inherited']) + titles_from_cell(row['original'])
+    if not table or not afternoon:
+        return afternoon
+    result = {}
+    for field, titles in afternoon.items():
+        snapped = []
+        for title in titles:
+            name = activity_name(title)
+            matches = [t for t in table if name and (name == activity_name(t) or name in activity_name(t)
+                                                     or activity_name(t) in name)]
+            snapped.append(min(matches, key=lambda t: abs(len(activity_name(t)) - len(name))) if matches else title)
+        result[field] = list(dict.fromkeys(snapped))
+    return result
+
+
 def reassign_afternoon_slots(afternoon):
     """몸을 움직이는 것이 분명한 오후 활동은 AI가 다른 영역에 넣었어도 [신체] 칸에 둡니다.
 
@@ -1145,7 +1169,8 @@ def apply_table_safety(day, rows):
     result = dict(day)
     # 실제 r24 결과(9월 4일)에서 AI가 행 이름 '기본생활 및 안전'을 내용처럼 적어 '(ㅇ)'까지 붙은 적이 있어 그 줄은 지웁니다.
     result['safety_check'] = '\n'.join(
-        line for line in result.get('safety_check', '').splitlines()
+        re.sub(r'^\s*[◈◆]?\s*활동명\s*[:：]\s*', '', line)
+        for line in result.get('safety_check', '').splitlines()
         if re.sub(r'[\s◈◆\-·•:：]', '', line) not in ('', '기본생활및안전', '기본생활', '안전'))
     if result['safety_check'].strip():
         return result
@@ -1305,7 +1330,7 @@ def apply_table_nap_title(day, rows):
             titles = re.findall(r'낮잠(?:음악|동화)\s*\[[^\]]+\]', row['inherited'])
         # Never import a music/story title from a reference daily plan.
         # 실제 배포 결과(9월 1일)에서 AI가 '[낮잠음악] 제목' 꼴로 한 줄 더 적은 적이 있어 그 꼴의 제목 줄도 지웁니다.
-        value = re.sub(r'(?m)^\s*[◈◆]?\s*(?:\[\s*낮잠(?:음악|동화)\s*\]|낮잠(?:음악|동화)\s*[:：]|낮잠(?:음악|동화)\s*\[[^\]]+\])[^\n]*\n?',
+        value = re.sub(r'(?m)^\s*[◈◆\-•·]?\s*(?:\[\s*낮잠(?:음악|동화)\s*\]|낮잠(?:음악|동화)\s*[:：]|낮잠(?:음악|동화)\s*\[[^\]]+\])[^\n]*\n?',
                        '', result.get('nap_plan', ''))
         mark = cell_mark(row['original']) or cell_mark(row['inherited'])
         result['nap_plan'] = '\n'.join(['◈ ' + t + (f' ({mark})' if mark else '') for t in titles] + [value.strip()]).strip()
@@ -1342,7 +1367,8 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
             afternoon = extract_afternoon_activities(api_key, weekly_text, target_label, status_box)
             if afternoon is None:
                 raise ValueError('주안 표의 오후 실내놀이를 확인하지 못했습니다.')
-            activities.update(stabilize_afternoon_slots(reassign_afternoon_slots(afternoon), slot_memory))
+            afternoon = reassign_afternoon_slots(snap_afternoon_titles(afternoon, day_context))
+            activities.update(stabilize_afternoon_slots(afternoon, slot_memory))
         else:
             activities = extract_day_activities(api_key, weekly_text, target_label, status_box)
         if day_context:
@@ -1568,7 +1594,7 @@ def analyze_and_generate(api_key, curriculum_bytes, mime_type, weekly_text, samp
 # ---------------- 4. 화면 ----------------
 st.set_page_config(page_title="일일보육계획안 자동 생성기", layout="wide")
 st.title("🌸 일일보육계획안 만들기")
-st.caption("앱 버전: 2026-11-10-r25")
+st.caption("앱 버전: 2026-11-10-r26")
 st.write("실행주안을 올리면 주안에 적힌 기간의 평일별 계획안을 만들어 한 번에 내려받을 수 있어요.")
 st.caption("문서 내용은 생성을 위해 Google Gemini로 전송됩니다. 아동 이름 등 개인정보는 지운 자료를 사용해 주세요.")
 api_key = setting("GEMINI_API_KEY")

@@ -342,6 +342,10 @@ class PlanRuleTests(unittest.TestCase):
         self.assertEqual(result['nap_plan'].count('사이좋게 지내자'), 1)
         self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 휴식을 돕는다.')
         self.assertEqual(NS['apply_table_nap_title'](result, rows), result)
+        # 실제 배포 결과(9월 1일)에 있던 '[낮잠음악] 제목' 꼴의 중복 줄도 지웁니다.
+        bracketed = '◈ 낮잠동화 [사이좋게 지내자]\n[낮잠동화] 사이좋게 지내자\n- 휴식을 돕는다.\n- 낮잠 잘 준비를 하고 낮잠 동화를 듣는다.'
+        result = NS['apply_table_nap_title']({'nap_plan': bracketed}, rows)
+        self.assertEqual(result['nap_plan'], '◈ 낮잠동화 [사이좋게 지내자] (ㅇ)\n- 휴식을 돕는다.\n- 낮잠 잘 준비를 하고 낮잠 동화를 듣는다.')
 
     def test_date_line_keeps_the_template_spacing(self):
         document = NS['build_hwp_from_template']((ROOT / 'template.hml').read_text(encoding='utf-8'),

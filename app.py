@@ -1285,7 +1285,9 @@ def apply_table_nap_title(day, rows):
         if not titles:
             titles = re.findall(r'낮잠(?:음악|동화)\s*\[[^\]]+\]', row['inherited'])
         # Never import a music/story title from a reference daily plan.
-        value = re.sub(r'(?m)^\s*[◈◆]?\s*낮잠(?:음악|동화)\s*[:：]?\s*\[[^\]]+\][^\n]*\n?', '', result.get('nap_plan', ''))
+        # 실제 배포 결과(9월 1일)에서 AI가 '[낮잠음악] 제목' 꼴로 한 줄 더 적은 적이 있어 그 꼴의 제목 줄도 지웁니다.
+        value = re.sub(r'(?m)^\s*[◈◆]?\s*(?:\[\s*낮잠(?:음악|동화)\s*\]|낮잠(?:음악|동화)\s*[:：]|낮잠(?:음악|동화)\s*\[[^\]]+\])[^\n]*\n?',
+                       '', result.get('nap_plan', ''))
         mark = cell_mark(row['original']) or cell_mark(row['inherited'])
         result['nap_plan'] = '\n'.join(['◈ ' + t + (f' ({mark})' if mark else '') for t in titles] + [value.strip()]).strip()
     return result
